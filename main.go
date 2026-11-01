@@ -32,17 +32,23 @@ static const cliproxy_host_api* host_api;
 
 static void set_host_api(const cliproxy_host_api* host) { host_api = host; }
 
-static void call_host(const char* method, const uint8_t* req, size_t len) {
-	if (host_api == NULL || host_api->call == NULL) return;
-	cliproxy_buffer resp = {0, 0};
-	host_api->call(host_api->host_ctx, method, req, len, &resp);
-	if (resp.ptr != NULL && host_api->free_buffer != NULL) host_api->free_buffer(resp.ptr, resp.len);
+// call_host invokes a host method and returns its response buffer in *out (caller frees via
+// free_host_buffer). Returns non-zero when the host API is unavailable or the call fails.
+static int call_host(const char* method, const uint8_t* req, size_t len, cliproxy_buffer* out) {
+	if (out != NULL) { out->ptr = NULL; out->len = 0; }
+	if (host_api == NULL || host_api->call == NULL) return 1;
+	return host_api->call(host_api->host_ctx, method, req, len, out);
+}
+
+static void free_host_buffer(void* ptr, size_t len) {
+	if (host_api != NULL && host_api->free_buffer != NULL && ptr != NULL) host_api->free_buffer(ptr, len);
 }
 */
 import "C"
 
 import (
 	"encoding/json"
+	"fmt"
 	"unsafe"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
@@ -79,14 +85,48 @@ func cliproxyPluginCall(method *C.char, req *C.uint8_t, n C.size_t, resp *C.clip
 func cliproxyPluginFree(ptr unsafe.Pointer, _ C.size_t) { C.free(ptr) }
 
 //export cliproxyPluginShutdown
-func cliproxyPluginShutdown() {}
+func cliproxyPluginShutdown() { shutdown() }
 
-// hostLog lives here because the C host-call shim is only visible to this file's cgo preamble.
+// callHost invokes a host callback method with a JSON request and returns the decoded envelope
+// result bytes. The C host-call shim is only visible to this file's cgo preamble, so every host
+// call funnels through here.
+func callHost(method string, req []byte) ([]byte, error) {
+	cMethod := C.CString(method)
+	defer C.free(unsafe.Pointer(cMethod))
+
+	var reqPtr *C.uint8_t
+	if len(req) > 0 {
+		cReq := C.CBytes(req)
+		defer C.free(cReq)
+		reqPtr = (*C.uint8_t)(cReq)
+	}
+
+	var out C.cliproxy_buffer
+	rc := C.call_host(cMethod, reqPtr, C.size_t(len(req)), &out)
+	var raw []byte
+	if out.ptr != nil {
+		raw = C.GoBytes(out.ptr, C.int(out.len))
+		C.free_host_buffer(out.ptr, out.len)
+	}
+	if rc != 0 {
+		return nil, fmt.Errorf("host call %s failed (rc=%d)", method, int(rc))
+	}
+
+	var env pluginabi.Envelope
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return nil, fmt.Errorf("host call %s: decode envelope: %w", method, err)
+	}
+	if env.Error != nil {
+		return nil, fmt.Errorf("host call %s: %s: %s", method, env.Error.Code, env.Error.Message)
+	}
+	return env.Result, nil
+}
+
+// hostLog emits a structured log line through the host.
 func hostLog(level, msg string) {
 	raw, _ := json.Marshal(map[string]string{"level": level, "message": msg})
-	method := C.CString(pluginabi.MethodHostLog)
-	defer C.free(unsafe.Pointer(method))
-	req := C.CBytes(raw)
-	defer C.free(req)
-	C.call_host(method, (*C.uint8_t)(req), C.size_t(len(raw)))
+	_, _ = callHost(pluginabi.MethodHostLog, raw)
 }

@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DeepInfra Autoscale</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1d212a; --border: #2a2f3a;
+    --text: #e4e7ec; --muted: #8b93a3; --accent: #5b8def; --accent-h: #7aa2f7;
+    --green: #3fb97a; --amber: #e0a43a; --red: #e5584f; --gray: #7c8494;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  header {
+    display: flex; flex-wrap: wrap; gap: 16px; align-items: center; justify-content: space-between;
+    padding: 16px 24px; border-bottom: 1px solid var(--border); background: var(--panel);
+  }
+  h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  h2 { font-size: 15px; margin: 0 0 12px; font-weight: 600; }
+  .sub { color: var(--muted); font-size: 12px; }
+  .head-right { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; }
+  .cost { text-align: right; }
+  .cost b { font-size: 20px; font-variant-numeric: tabular-nums; }
+  main { max-width: 1200px; margin: 0 auto; padding: 24px; display: grid; gap: 24px; }
+  section { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  input[type=text], input[type=password], select {
+    width: 100%; background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 8px 10px; font: inherit; min-width: 0;
+  }
+  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+  input.attn { outline: 2px solid var(--red); border-color: transparent; }
+  .keybox { width: 260px; }
+  button {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 12px; font: inherit; cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--muted); }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button.primary:hover:not(:disabled) { background: var(--accent-h); border-color: var(--accent-h); }
+  button.danger { color: var(--red); }
+  button.danger:hover:not(:disabled) { border-color: var(--red); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px 14px; }
+  .check { display: flex; align-items: center; gap: 8px; padding-top: 22px; }
+  .check input { width: auto; }
+  .check label { margin: 0; color: var(--text); font-size: 13px; }
+  .note { margin: 0 0 14px; padding: 8px 12px; border-left: 3px solid var(--amber); background: rgba(224,164,58,.08); color: #d8c08a; font-size: 13px; border-radius: 0 6px 6px 0; }
+  .msg { margin-top: 10px; font-size: 13px; min-height: 18px; }
+  .msg.ok { color: var(--green); } .msg.err { color: var(--red); }
+  .banner { padding: 10px 14px; border-radius: 6px; background: rgba(229,88,79,.12); border: 1px solid var(--red); color: #f2a09a; display: none; }
+  .banner.show { display: block; }
+  .tablewrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  td { padding: 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  tr:last-child td { border-bottom: none; }
+  td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
+  .muted { color: var(--muted); }
+  .badge { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; border: 1px solid; white-space: nowrap; }
+  .badge.green { color: var(--green); border-color: rgba(63,185,122,.4); background: rgba(63,185,122,.1); }
+  .badge.amber { color: var(--amber); border-color: rgba(224,164,58,.4); background: rgba(224,164,58,.1); }
+  .badge.red { color: var(--red); border-color: rgba(229,88,79,.4); background: rgba(229,88,79,.1); }
+  .badge.gray { color: var(--gray); border-color: rgba(124,132,148,.4); background: rgba(124,132,148,.1); }
+  .actions { display: flex; gap: 6px; white-space: nowrap; }
+  .empty { padding: 28px; text-align: center; color: var(--muted); }
+  .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 12px; flex-wrap: wrap; }
+  .toolbar h2 { margin: 0; }
+  .row-err { color: var(--red); font-size: 12px; margin-top: 2px; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>DeepInfra Autoscale</h1>
+    <div class="sub">Self-hosted model management</div>
+  </div>
+  <div class="head-right">
+    <div class="keybox">
+      <label for="key">Management key</label>
+      <input id="key" type="password" autocomplete="off" placeholder="Bearer token" spellcheck="false">
+    </div>
+    <div class="cost">
+      <div class="sub">Running now (est.)</div>
+      <b id="cost">$0.00</b><span class="sub">/hr</span>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div id="banner" class="banner" role="alert"></div>
+
+  <section>
+    <div class="toolbar">
+      <h2>Models</h2>
+      <div style="display:flex;align-items:center;gap:12px">
+        <span class="sub" id="meta"></span>
+        <button id="refresh" type="button">Refresh</button>
+      </div>
+    </div>
+    <div class="tablewrap" id="list"></div>
+  </section>
+
+  <section>
+    <h2>Add model</h2>
+    <p class="note">Creating a model provisions GPUs on DeepInfra and bills while running; models scale to zero after the idle window.</p>
+    <form id="form" autocomplete="off">
+      <div class="grid">
+        <div><label for="f-id">Model id *</label><input id="f-id" type="text" required placeholder="red-snow-5.3-flash"></div>
+        <div><label for="f-repo">HF repo *</label><input id="f-repo" type="text" required placeholder="Blackfrost-AI/RED-SNOW-5.3-FLASH-NVFP4"></div>
+        <div><label for="f-rev">Revision (commit sha)</label><input id="f-rev" type="text" placeholder="optional"></div>
+        <div><label for="f-gpu">GPU *</label><select id="f-gpu" required><option value="">Loading...</option></select></div>
+        <div><label for="f-ctx">Context length *</label><input id="f-ctx" type="text" required placeholder="1M, 256k or 1048576"></div>
+        <div><label for="f-quant">Quantization</label><input id="f-quant" type="text" placeholder="fp8"></div>
+        <div><label for="f-tool">Tool parser</label><input id="f-tool" type="text" placeholder="glm47"></div>
+        <div><label for="f-reason">Reasoning parser</label><input id="f-reason" type="text" placeholder="glm45"></div>
+        <div class="check"><input id="f-think" type="checkbox"><label for="f-think">Enable thinking</label></div>
+      </div>
+      <div style="margin-top:14px;display:flex;align-items:center;gap:12px">
+        <button class="primary" id="submit" type="submit">Add model</button>
+        <span id="formmsg" class="msg" style="margin:0"></span>
+      </div>
+    </form>
+  </section>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  var API = "/v0/management/deepinfra-autoscale/models";
+  var KEY_NAME = "cpa_mgmt_key";
+  var $ = function (id) { return document.getElementById(id); };
+  var keyInput = $("key");
+  var state = { models: [], gpus: [], idle: null, busy: {}, rowErr: {} };
+  var gpuSig = "";
+
+  try { keyInput.value = localStorage.getItem(KEY_NAME) || ""; } catch (e) {}
+
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  }
+
+  function showBanner(text) {
+    var b = $("banner");
+    b.textContent = text || "";
+    b.classList.toggle("show", !!text);
+  }
+
+  function authFail() {
+    var has = keyInput.value.trim() !== "";
+    showBanner(has
+      ? "Management key invalid (401). Enter a valid key above."
+      : "Management key required (401). Enter it in the field above.");
+    keyInput.classList.add("attn");
+    keyInput.focus();
+  }
+
+  function api(method, path, body) {
+    var headers = { "Authorization": "Bearer " + keyInput.value.trim() };
+    var opts = { method: method, headers: headers };
+    if (body !== undefined) {
+      headers["Content-Type"] = "application/json";
+      opts.body = JSON.stringify(body);
+    }
+    return fetch(API + path, opts).then(function (res) {
+      return res.text().then(function (txt) {
+        var data = null;
+        try { data = txt ? JSON.parse(txt) : null; } catch (e) {}
+        if (res.status === 401) {
+          authFail();
+          var e401 = new Error("Management key required or invalid");
+          e401.auth = true;
+          throw e401;
+        }
+        if (!res.ok || (data && data.error)) {
+          throw new Error((data && data.error) || ("HTTP " + res.status + (txt && !data ? ": " + txt.slice(0, 200) : "")));
+        }
+        return data || {};
+      });
+    });
+  }
+
+  /* ---------- formatting ---------- */
+  function fmtContext(n) {
+    n = Number(n);
+    if (!isFinite(n) || n <= 0) return "-";
+    if (n % 1048576 === 0) return (n / 1048576) + "M";
+    if (n % 1024 === 0) return (n / 1024) + "k";
+    if (n >= 1000) return (n / 1000).toFixed(n % 1000 ? 1 : 0) + "k";
+    return String(n);
+  }
+
+  function parseContext(s) {
+    var m = /^\s*(\d+(?:\.\d+)?)\s*([kKmM]?)\s*$/.exec(s);
+    if (!m) return null;
+    var v = parseFloat(m[1]), u = m[2].toLowerCase();
+    if (u === "k") v *= 1024;
+    else if (u === "m") v *= 1048576;
+    v = Math.round(v);
+    return v > 0 ? v : null;
+  }
+
+  function parseNumGpus(name) {
+    var m = /^(\d+)\s*x/i.exec(name || "");
+    return m ? parseInt(m[1], 10) : 1;
+  }
+
+  function relTime(unix) {
+    unix = Number(unix);
+    if (!unix || unix <= 0) return "never";
+    var s = Math.max(0, Math.floor(Date.now() / 1000 - unix));
+    if (s < 45) return "just now";
+    var m = Math.round(s / 60);
+    if (m < 60) return m + "m ago";
+    var h = Math.floor(s / 3600);
+    if (h < 48) return h + "h ago";
+    return Math.floor(s / 86400) + "d ago";
+  }
+
+  function money(n) { return "$" + (Number(n) || 0).toFixed(2); }
+
+  function statusClass(st) {
+    switch (st) {
+      case "running": return "green";
+      case "deploying": case "downloading": return "amber";
+      case "failed": return "red";
+      default: return "gray";
+    }
+  }
+
+  /* ---------- rendering ---------- */
+  function renderGpuOptions() {
+    var sig = JSON.stringify(state.gpus);
+    if (sig === gpuSig) return;
+    gpuSig = sig;
+    var sel = $("f-gpu");
+    var prev = sel.value;
+    sel.textContent = "";
+    var ph = el("option", null, state.gpus.length ? "Select a GPU..." : "No GPUs available");
+    ph.value = "";
+    sel.appendChild(ph);
+    state.gpus.forEach(function (g) {
+      var o = el("option", null, g.name + " - " + money(g.usd_per_hour) + "/hr" + (g.available ? "" : " (unavailable)"));
+      o.value = g.name;
+      o.disabled = !g.available;
+      sel.appendChild(o);
+    });
+    if (prev) sel.value = prev;
+  }
+
+  function renderCost() {
+    var total = 0;
+    state.models.forEach(function (m) {
+      if (m.status === "running") total += Number(m.usd_per_hour) || 0;
+    });
+    $("cost").textContent = money(total);
+  }
+
+  function renderList() {
+    var box = $("list");
+    box.textContent = "";
+    $("meta").textContent = state.idle != null ? "Idle window: " + state.idle + " min" : "";
+    if (!state.models.length) {
+      box.appendChild(el("div", "empty", "No models yet"));
+      return;
+    }
+    var table = el("table");
+    var thead = el("thead"), hr = el("tr");
+    ["Model", "HF repo", "GPU", "Context", "Status", "Last used", "Actions"].forEach(function (h) {
+      hr.appendChild(el("th", null, h));
+    });
+    thead.appendChild(hr); table.appendChild(thead);
+    var tbody = el("tbody");
+
+    state.models.forEach(function (m) {
+      var tr = el("tr");
+
+      var tdId = el("td", "mono", m.id);
+      tr.appendChild(tdId);
+
+      var tdRepo = el("td");
+      tdRepo.appendChild(el("div", "mono", m.hf_repo || "-"));
+      if (m.revision) tdRepo.appendChild(el("div", "sub mono", "@" + String(m.revision).slice(0, 8)));
+      tr.appendChild(tdRepo);
+
+      var tdGpu = el("td");
+      tdGpu.appendChild(el("div", null, m.gpu || "-"));
+      tdGpu.appendChild(el("div", "sub", money(m.usd_per_hour) + "/hr"));
+      tr.appendChild(tdGpu);
+
+      tr.appendChild(el("td", null, fmtContext(m.context)));
+
+      var tdSt = el("td");
+      tdSt.appendChild(el("span", "badge " + statusClass(m.status), m.status || "unknown"));
+      tr.appendChild(tdSt);
+
+      var tdLast = el("td", "muted", relTime(m.last_used_unix));
+      if (Number(m.last_used_unix) > 0) tdLast.title = new Date(m.last_used_unix * 1000).toLocaleString();
+      tr.appendChild(tdLast);
+
+      var tdAct = el("td");
+      var acts = el("div", "actions");
+      var busy = !!state.busy[m.id];
+      var wake = el("button", null, "Wake");
+      wake.type = "button";
+      wake.disabled = busy || m.status === "running" || m.status === "deploying" || m.status === "downloading";
+      wake.addEventListener("click", function () { rowAction(m.id, "/wake?id=", "POST"); });
+      var sleep = el("button", null, "Sleep");
+      sleep.type = "button";
+      sleep.disabled = busy || m.status === "scaled-to-zero" || m.status === "idle";
+      sleep.addEventListener("click", function () { rowAction(m.id, "/sleep?id=", "POST"); });
+      var rm = el("button", "danger", "Remove");
+      rm.type = "button";
+      rm.disabled = busy;
+      rm.addEventListener("click", function () {
+        if (confirm("Remove model \"" + m.id + "\"? This releases its GPUs and deletes the entry.")) {
+          rowAction(m.id, "", "DELETE");
+        }
+      });
+      acts.appendChild(wake); acts.appendChild(sleep); acts.appendChild(rm);
+      tdAct.appendChild(acts);
+      if (state.rowErr[m.id]) tdAct.appendChild(el("div", "row-err", state.rowErr[m.id]));
+      tr.appendChild(tdAct);
+
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    box.appendChild(table);
+  }
+
+  /* ---------- data ---------- */
+  var loading = false;
+  function load() {
+    if (loading) return Promise.resolve();
+    loading = true;
+    return api("GET", "").then(function (d) {
+      state.models = Array.isArray(d.models) ? d.models : [];
+      state.gpus = Array.isArray(d.gpus) ? d.gpus : [];
+      state.idle = d.idle_minutes != null ? d.idle_minutes : null;
+      showBanner("");
+      keyInput.classList.remove("attn");
+      renderGpuOptions(); renderCost(); renderList();
+    }).catch(function (e) {
+      if (!e.auth) showBanner("Failed to load models: " + e.message);
+    }).then(function () { loading = false; });
+  }
+
+  function rowAction(id, suffix, method) {
+    state.busy[id] = true;
+    delete state.rowErr[id];
+    renderList();
+    var path = method === "DELETE" ? "?id=" + encodeURIComponent(id) : suffix + encodeURIComponent(id);
+    api(method, path).catch(function (e) {
+      state.rowErr[id] = e.message;
+    }).then(function () {
+      delete state.busy[id];
+      return load();
+    }).then(renderList);
+  }
+
+  /* ---------- form ---------- */
+  function setFormMsg(text, kind) {
+    var m = $("formmsg");
+    m.textContent = text || "";
+    m.className = "msg" + (kind ? " " + kind : "");
+    m.style.margin = "0";
+  }
+
+  $("form").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var ctx = parseContext($("f-ctx").value);
+    if (ctx == null) { setFormMsg("Invalid context length. Use e.g. 1048576, 1M or 256k.", "err"); return; }
+    var gpu = $("f-gpu").value;
+    if (!gpu) { setFormMsg("Select a GPU.", "err"); return; }
+    var body = {
+      id: $("f-id").value.trim(),
+      hf_repo: $("f-repo").value.trim(),
+      revision: $("f-rev").value.trim(),
+      gpu: gpu,
+      num_gpus: parseNumGpus(gpu),
+      context: ctx,
+      quantization: $("f-quant").value.trim(),
+      tool_parser: $("f-tool").value.trim(),
+      reasoning_parser: $("f-reason").value.trim(),
+      enable_thinking: $("f-think").checked
+    };
+    var btn = $("submit");
+    btn.disabled = true;
+    setFormMsg("Submitting...", "");
+    api("POST", "", body).then(function (d) {
+      setFormMsg("Model \"" + ((d.model && d.model.id) || body.id) + "\" added.", "ok");
+      $("form").reset();
+      return load();
+    }).catch(function (e) {
+      setFormMsg(e.message, "err");
+    }).then(function () { btn.disabled = false; });
+  });
+
+  keyInput.addEventListener("input", function () {
+    try { localStorage.setItem(KEY_NAME, keyInput.value); } catch (e) {}
+  });
+  keyInput.addEventListener("change", function () { load(); });
+  $("refresh").addEventListener("click", function () { load(); });
+
+  load();
+  setInterval(load, 15000);
+  setInterval(renderList, 30000);
+})();
+</script>
+</body>
+</html>
