@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -226,18 +227,10 @@ func TestDashboardStatus(t *testing.T) {
 	if dashboardStatus(nil) != "scaled-to-zero" {
 		t.Error("nil should be scaled-to-zero")
 	}
-	zero := &diDeployment{Status: "running", Settings: &struct {
-		MinInstances int `json:"min_instances"`
-		MaxInstances int `json:"max_instances"`
-	}{MinInstances: 0, MaxInstances: 1}}
-	if dashboardStatus(zero) != "scaled-to-zero" {
-		t.Error("min_instances 0 should be scaled-to-zero")
+	if dashboardStatus(&diDeployment{Status: "stopped"}) != "scaled-to-zero" {
+		t.Error("stopped should map to scaled-to-zero")
 	}
-	run := &diDeployment{Status: "running", Settings: &struct {
-		MinInstances int `json:"min_instances"`
-		MaxInstances int `json:"max_instances"`
-	}{MinInstances: 1, MaxInstances: 1}}
-	if dashboardStatus(run) != "running" {
+	if dashboardStatus(&diDeployment{Status: "running"}) != "running" {
 		t.Error("running mismatch")
 	}
 	if dashboardStatus(&diDeployment{Status: "failed"}) != "failed" {
@@ -264,6 +257,69 @@ func TestRewriteModel(t *testing.T) {
 	bad := []byte(`not json`)
 	if string(rewriteModel(bad, "x")) != "not json" {
 		t.Error("invalid json should be unchanged")
+	}
+}
+
+func TestShouldStop(t *testing.T) {
+	const idle = int64(1800) // 30 min
+	const maxUp = int64(43200) // 12 h
+	now := int64(1_000_000)
+	cases := []struct {
+		name               string
+		lastUsed, runStart int64
+		want               bool
+	}{
+		{"active recently", now - 10, now - 100, false},
+		{"idle past window", now - 3600, now - 4000, true},
+		{"woken never used, past window", 0, now - 3600, true},
+		{"woken never used, within window", 0, now - 10, false},
+		{"over max uptime despite activity", now - 5, now - 99999, true},
+		{"no deployment record", 0, 0, false},
+	}
+	for _, c := range cases {
+		if got := shouldStop(c.lastUsed, c.runStart, now, idle, maxUp); got != c.want {
+			t.Errorf("%s: shouldStop=%v want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestMatchesModel(t *testing.T) {
+	m := &Model{ID: "flash", DeployID: "DEP1", DeepInfraName: "Pandoks/flash"}
+	// Exact deploy id.
+	if !(&diDeployment{DeployID: "DEP1", ModelName: "Pandoks/flash", Status: "running"}).matchesModel(m) {
+		t.Error("exact deploy id should match")
+	}
+	// Exact name (different/empty deploy id).
+	if !(&diDeployment{DeployID: "other", ModelName: "Pandoks/flash", Status: "running"}).matchesModel(m) {
+		t.Error("exact name should match")
+	}
+	// Foreign deployment sharing the last segment must NOT match.
+	if (&diDeployment{DeployID: "x", ModelName: "someorg/flash", Status: "running"}).matchesModel(m) {
+		t.Error("foreign suffix must NOT match")
+	}
+	// Gone status never matches.
+	if (&diDeployment{DeployID: "DEP1", ModelName: "Pandoks/flash", Status: "deleting"}).matchesModel(m) {
+		t.Error("gone status must not match")
+	}
+	// A never-provisioned model (no id, no name) matches nothing.
+	none := &Model{ID: "flash"}
+	if (&diDeployment{ModelName: "someorg/flash", Status: "running"}).matchesModel(none) {
+		t.Error("never-provisioned model must not suffix-match a foreign deployment")
+	}
+}
+
+func TestAddRollbackOnSaveFailure(t *testing.T) {
+	// An unwritable state path makes saveLocked fail; add must roll back so the model isn't left
+	// half-added in memory.
+	s := &store{models: map[string]*Model{}, lastUsed: map[string]int64{}, runStart: map[string]int64{},
+		idLocks: map[string]*sync.Mutex{}, path: filepath.Join(t.TempDir(), "nonexistent-dir\x00bad", "s.json")}
+	m := &Model{ID: "x", HFRepo: "O/M", GPU: "1xA100-80GB", Context: 1024}
+	m.normalize()
+	if err := s.add(m); err == nil {
+		t.Error("add should fail when persistence fails")
+	}
+	if s.has("x") {
+		t.Error("add must roll back the in-memory entry on persistence failure")
 	}
 }
 

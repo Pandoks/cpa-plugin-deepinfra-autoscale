@@ -88,12 +88,30 @@ type store struct {
 	lastUsed map[string]int64 // model id -> unix seconds of last request
 	runStart map[string]int64 // model id -> unix seconds the current running instance was woken
 	path     string
+
+	idLocksMu sync.Mutex
+	idLocks   map[string]*sync.Mutex
 }
 
 var modelStore = &store{
 	models:   map[string]*Model{},
 	lastUsed: map[string]int64{},
 	runStart: map[string]int64{},
+	idLocks:  map[string]*sync.Mutex{},
+}
+
+// lock serializes provision/wake/sleep/remove for one model id so they can't race into an
+// orphaned (billing-but-untracked) deployment. Returns the unlock func.
+func (s *store) lock(id string) func() {
+	s.idLocksMu.Lock()
+	l := s.idLocks[id]
+	if l == nil {
+		l = &sync.Mutex{}
+		s.idLocks[id] = l
+	}
+	s.idLocksMu.Unlock()
+	l.Lock()
+	return l.Unlock
 }
 
 // load reads persisted models from the state file at the given path. Missing file is not an error.
@@ -118,9 +136,9 @@ func (s *store) load(path string) {
 }
 
 // saveLocked writes the current model set to disk atomically. Caller holds s.mu.
-func (s *store) saveLocked() {
+func (s *store) saveLocked() error {
 	if s.path == "" {
-		return
+		return nil
 	}
 	list := make([]*Model, 0, len(s.models))
 	for _, m := range s.models {
@@ -128,21 +146,19 @@ func (s *store) saveLocked() {
 	}
 	data, err := json.MarshalIndent(list, "", "  ")
 	if err != nil {
-		hostLog("error", fmt.Sprintf("deepinfra-autoscale: marshal state: %v", err))
-		return
+		return fmt.Errorf("marshal state: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
-		hostLog("error", fmt.Sprintf("deepinfra-autoscale: mkdir state dir: %v", err))
-		return
+		return fmt.Errorf("mkdir state dir: %w", err)
 	}
 	tmp := s.path + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		hostLog("error", fmt.Sprintf("deepinfra-autoscale: write state: %v", err))
-		return
+		return fmt.Errorf("write state: %w", err)
 	}
 	if err := os.Rename(tmp, s.path); err != nil {
-		hostLog("error", fmt.Sprintf("deepinfra-autoscale: rename state: %v", err))
+		return fmt.Errorf("rename state: %w", err)
 	}
+	return nil
 }
 
 func (s *store) get(id string) (*Model, bool) {
@@ -174,7 +190,8 @@ func (s *store) list() []*Model {
 	return out
 }
 
-// add inserts a new model (error if the id already exists) and persists.
+// add inserts a new model (error if the id already exists) and persists. If persistence fails the
+// add is rolled back, so an add that returns nil is durable.
 func (s *store) add(m *Model) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -182,7 +199,10 @@ func (s *store) add(m *Model) error {
 		return fmt.Errorf("model %q already exists", m.ID)
 	}
 	s.models[m.ID] = m
-	s.saveLocked()
+	if err := s.saveLocked(); err != nil {
+		delete(s.models, m.ID)
+		return err
+	}
 	return nil
 }
 
@@ -197,7 +217,9 @@ func (s *store) remove(id string) (*Model, bool) {
 	delete(s.models, id)
 	delete(s.lastUsed, id)
 	delete(s.runStart, id)
-	s.saveLocked()
+	if err := s.saveLocked(); err != nil {
+		hostLog("error", fmt.Sprintf("deepinfra-autoscale: persist after remove %s: %v", id, err))
+	}
 	return m, true
 }
 
@@ -208,7 +230,9 @@ func (s *store) setDeployment(id, deployID, deepInfraName string) {
 	if m, ok := s.models[id]; ok {
 		m.DeployID = deployID
 		m.DeepInfraName = deepInfraName
-		s.saveLocked()
+		if err := s.saveLocked(); err != nil {
+			hostLog("error", fmt.Sprintf("deepinfra-autoscale: persist deploy linkage %s: %v", id, err))
+		}
 	}
 }
 
@@ -223,7 +247,9 @@ func (s *store) markUsed(id string, now int64) {
 func (s *store) markRunning(id string, now int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.runStart[id] = now
+	if _, ok := s.models[id]; ok {
+		s.runStart[id] = now
+	}
 }
 
 func (s *store) clearRunning(id string) {

@@ -162,7 +162,8 @@ func addModelResponse(body []byte) pluginapi.ManagementResponse {
 	// Lazy provisioning: registering a model does not create GPUs. It becomes routable immediately
 	// and provisions on first request (or an explicit Wake), so adding costs nothing.
 	if err := modelStore.add(&m); err != nil {
-		return jsonResponse(http.StatusConflict, map[string]string{"error": err.Error()})
+		// add() rolls back on a persistence failure, so this is not a durable add.
+		return jsonResponse(http.StatusInternalServerError, map[string]string{"error": "could not persist model: " + err.Error()})
 	}
 	return jsonResponse(http.StatusOK, map[string]any{"ok": true, "model": m})
 }
@@ -171,11 +172,16 @@ func removeModelResponse(cb, id string) pluginapi.ManagementResponse {
 	if id == "" {
 		return jsonResponse(http.StatusBadRequest, map[string]string{"error": "missing id"})
 	}
+	// Hold the per-id lock so teardown can't race a concurrent provision into an orphaned
+	// (billing-but-untracked) deployment; delete by the recorded deploy id (authoritative).
+	unlock := modelStore.lock(id)
+	defer unlock()
 	m, ok := modelStore.get(id)
 	if !ok {
 		return jsonResponse(http.StatusNotFound, map[string]string{"error": "model " + id + " not found"})
 	}
-	// Tear down the deployment first so removal also stops billing; ignore "already gone".
+	// Tear down the deployment first so removal also stops billing; only drop the model on success,
+	// so a failed delete keeps the linkage for retry rather than orphaning the deployment.
 	if err := deleteDeployment(cb, m); err != nil {
 		return jsonResponse(http.StatusBadGateway, map[string]string{"error": "delete deployment: " + err.Error()})
 	}
@@ -186,6 +192,9 @@ func removeModelResponse(cb, id string) pluginapi.ManagementResponse {
 func actionResponse(cb, id string, fn func(string, string) error) pluginapi.ManagementResponse {
 	if id == "" {
 		return jsonResponse(http.StatusBadRequest, map[string]string{"error": "missing id"})
+	}
+	if !modelStore.has(id) {
+		return jsonResponse(http.StatusNotFound, map[string]string{"error": "model " + id + " not found"})
 	}
 	if err := fn(cb, id); err != nil {
 		return jsonResponse(http.StatusBadGateway, map[string]string{"error": err.Error()})

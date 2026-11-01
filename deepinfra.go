@@ -25,6 +25,11 @@ type diDeployment struct {
 // diGone lists statuses meaning the deployment is already gone; never adopt one of these.
 var diGone = map[string]bool{"deleted": true, "deleting": true}
 
+// diStopped reports whether a deployment is stopped (scaled to zero; not billing).
+func (d *diDeployment) stopped() bool {
+	return d.Status == "stopped"
+}
+
 func diAuthHeaders() map[string][]string {
 	return map[string][]string{
 		"Authorization": {"Bearer " + apiKey()},
@@ -59,14 +64,19 @@ func diList(callbackID string) ([]diDeployment, error) {
 	return all, nil
 }
 
-// diFind locates the live deployment for a model, matching by deploy id first, then by the
-// "<owner>/<id>" model-name suffix. Dead (deleted/deleting) deployments are ignored.
+// diFind locates the live deployment for a model, matching ONLY by the exact deploy id or the
+// exact "<owner>/<id>" model name this plugin recorded when it created the deployment. It never
+// matches on a bare id suffix, which could collide with an unrelated account deployment whose
+// name ends in the same segment (and get it mis-routed, stopped, or deleted). A model that was
+// never provisioned (no recorded deploy id or name) returns nil — there is nothing to find.
 func diFind(callbackID string, m *Model) (*diDeployment, error) {
+	if m.DeployID == "" && m.DeepInfraName == "" {
+		return nil, nil
+	}
 	all, err := diList(callbackID)
 	if err != nil {
 		return nil, err
 	}
-	// Prefer an exact deploy-id match.
 	if m.DeployID != "" {
 		for i := range all {
 			if all[i].DeployID == m.DeployID && !diGone[all[i].Status] {
@@ -74,16 +84,26 @@ func diFind(callbackID string, m *Model) (*diDeployment, error) {
 			}
 		}
 	}
-	suffix := "/" + m.ID
-	for i := range all {
-		if diGone[all[i].Status] {
-			continue
-		}
-		if all[i].ModelName == m.ID || strings.HasSuffix(all[i].ModelName, suffix) {
-			return &all[i], nil
+	if m.DeepInfraName != "" {
+		for i := range all {
+			if all[i].ModelName == m.DeepInfraName && !diGone[all[i].Status] {
+				return &all[i], nil
+			}
 		}
 	}
 	return nil, nil
+}
+
+// matchesModel reports whether a deployment is the one this plugin created for a model (exact
+// deploy id or exact recorded name — never a bare suffix).
+func (d *diDeployment) matchesModel(m *Model) bool {
+	if diGone[d.Status] {
+		return false
+	}
+	if m.DeployID != "" && d.DeployID == m.DeployID {
+		return true
+	}
+	return m.DeepInfraName != "" && d.ModelName == m.DeepInfraName
 }
 
 // diCreateBody builds the POST /deploy/llm payload for a model.
@@ -146,12 +166,20 @@ func diCreate(callbackID string, m *Model) (*diDeployment, error) {
 	return &dep, nil
 }
 
-// diScale sets min_instances (max stays 1).
-func diScale(callbackID, deployID string, minInstances int) error {
-	body, _ := json.Marshal(map[string]any{
-		"settings": map[string]any{"min_instances": minInstances, "max_instances": 1},
-	})
-	resp, err := httpDo(callbackID, "PUT", deepInfraAPI+"/deploy/"+deployID, diAuthHeaders(), body)
+// diStop stops a deployment (status -> "stopped"), which halts billing while keeping the
+// deployment (and its downloaded weights) so a later start is fast. DeepInfra rejects
+// min_instances:0, so this dedicated endpoint is the scale-to-zero mechanism.
+func diStop(callbackID, deployID string) error {
+	return diLifecycle(callbackID, deployID, "stop")
+}
+
+// diStart restarts a stopped deployment (status -> "deploying" -> "running").
+func diStart(callbackID, deployID string) error {
+	return diLifecycle(callbackID, deployID, "start")
+}
+
+func diLifecycle(callbackID, deployID, action string) error {
+	resp, err := httpDo(callbackID, "POST", deepInfraAPI+"/deploy/"+deployID+"/"+action, diAuthHeaders(), nil)
 	if err != nil {
 		return err
 	}
@@ -245,12 +273,11 @@ func dashboardStatus(dep *diDeployment) string {
 	if dep == nil {
 		return "scaled-to-zero"
 	}
-	if dep.Settings != nil && dep.Settings.MinInstances == 0 {
-		return "scaled-to-zero"
-	}
 	switch dep.Status {
 	case "running":
 		return "running"
+	case "stopped":
+		return "scaled-to-zero"
 	case "downloading", "deploying", "initializing":
 		return dep.Status
 	case "failed":

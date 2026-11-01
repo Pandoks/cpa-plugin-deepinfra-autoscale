@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -37,11 +38,15 @@ func upstreamFor(sourceFormat string) (url string, extraHeaders map[string][]str
 	}
 }
 
-// rewriteModel sets the upstream "model" field in a chat payload to the DeepInfra deployment name.
+// rewriteModel sets the upstream "model" field in a chat payload to the DeepInfra deployment name,
+// preserving all other fields and their numeric precision (UseNumber avoids turning large integer
+// fields like seed into lossy float64).
 func rewriteModel(payload []byte, deepInfraName string) []byte {
+	dec := json.NewDecoder(bytes.NewReader(payload))
+	dec.UseNumber()
 	var body map[string]any
-	if err := json.Unmarshal(payload, &body); err != nil {
-		return payload // leave as-is; upstream will report the error
+	if err := dec.Decode(&body); err != nil {
+		return payload // not a JSON object; leave as-is, upstream will report the error
 	}
 	body["model"] = deepInfraName
 	out, err := json.Marshal(body)
@@ -59,13 +64,12 @@ func prepareUpstream(r *executorRequest) (url string, headers map[string][]strin
 	if id == "" {
 		id = normalizeModelID(r.Alias())
 	}
-	m, ok := modelStore.get(id)
-	if !ok {
+	if id == "" || !modelStore.has(id) {
 		return "", nil, nil, errorEnvelopeStatus("unknown_model", fmt.Sprintf("model %q is not managed by deepinfra-autoscale", id), http.StatusNotFound)
 	}
 	modelStore.markUsed(id, time.Now().Unix())
 
-	status, err := ensureRunning(r.HostCallbackID, m)
+	status, err := ensureRunning(r.HostCallbackID, id)
 	if err != nil {
 		return "", nil, nil, errorEnvelopeStatus("deepinfra_error", err.Error(), http.StatusBadGateway)
 	}
@@ -76,10 +80,9 @@ func prepareUpstream(r *executorRequest) (url string, headers map[string][]strin
 	}
 
 	// Re-read to get the deployment name learned during ensureRunning.
-	m, _ = modelStore.get(id)
-	name := m.DeepInfraName
-	if name == "" {
-		name = id
+	name := id
+	if m, ok := modelStore.get(id); ok && m.DeepInfraName != "" {
+		name = m.DeepInfraName
 	}
 
 	url, extra := upstreamFor(r.SourceFormat)
@@ -144,6 +147,7 @@ func pumpStream(hostStream, downstream string) {
 	defer func() {
 		if v := recover(); v != nil {
 			hostLog("warn", fmt.Sprintf("deepinfra-autoscale: stream pump panic: %v", v))
+			httpStreamClose(hostStream)
 			streamClose(downstream, "stream pump panic")
 		}
 	}()

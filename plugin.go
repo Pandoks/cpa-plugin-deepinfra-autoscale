@@ -23,8 +23,6 @@ func dispatch(method string, req []byte) (out []byte) {
 
 	case pluginabi.MethodModelStatic:
 		return handleModelStatic()
-	case pluginabi.MethodModelRegister:
-		return handleModelStatic() // same model set, either pull method
 	case pluginabi.MethodModelForAuth:
 		return envelope(pluginapi.ModelResponse{Provider: "deepinfra"}, nil)
 
@@ -49,6 +47,10 @@ func dispatch(method string, req []byte) (out []byte) {
 		return handleUsage(req)
 
 	case pluginabi.MethodPluginQuiesce, pluginabi.MethodPluginShutdown:
+		// The host is still alive here, so best-effort stop every running deployment to halt GPU
+		// billing before CPA goes down, then stop the local ticker.
+		stopAllRunning()
+		stopAutoscaler()
 		return envelope(struct{}{}, nil)
 	}
 	return errorEnvelope("unknown_method", fmt.Sprintf("unknown method %q", method))
