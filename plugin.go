@@ -81,10 +81,8 @@ func registration() map[string]any {
 			Author:           "Pandoks",
 			GitHubRepository: "https://github.com/Pandoks/cpa-plugin-deepinfra-autoscale",
 			ConfigFields: []pluginapi.ConfigField{
-				{Name: "api-key", Type: pluginapi.ConfigFieldTypeString, Description: "DeepInfra API key"},
-				{Name: "idle-minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "Scale a model to zero after this many idle minutes (default 30)"},
-				{Name: "max-uptime-minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "Hard cap on continuous uptime before forcing scale-to-zero (default 720)"},
-				{Name: "state-file", Type: pluginapi.ConfigFieldTypeString, Description: "Path to the persisted model definitions"},
+				// NOTE: everything else (models, idle window, max uptime) is set on the plugin's page.
+				{Name: "api-key", Type: pluginapi.ConfigFieldTypeString, Description: "DeepInfra API key. Models and scaling are managed on the DeepInfra Autoscale page."},
 			},
 		},
 		"capabilities": capabilities{

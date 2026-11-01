@@ -5,15 +5,24 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DeepInfra Autoscale</title>
 <style>
+  /* NOTE: the management panel's palettes; data-theme mirrors the panel's (none = light). */
   :root {
-    --bg: #0f1115; --panel: #171a21; --panel2: #1d212a; --border: #2a2f3a;
-    --text: #e4e7ec; --muted: #8b93a3; --accent: #5b8def; --accent-h: #7aa2f7;
-    --green: #3fb97a; --amber: #e0a43a; --red: #e5584f; --gray: #7c8494;
+    --bg: #f0eee8; --panel: #faf9f5; --panel2: #fffdf9; --border: #e3e1db;
+    --text: #2d2a26; --muted: #6d6760; --accent: #8b8680; --accent-h: #7f7a74;
+    --green: #10b981; --amber: #d97706; --red: #c65746; --gray: #a29c95;
+  }
+  [data-theme=white] {
+    --bg: #fff; --panel: #fff; --panel2: #f6f6f6; --border: #e5e5e5;
+  }
+  [data-theme=dark] {
+    --bg: #151412; --panel: #1d1b18; --panel2: #262320; --border: #3a3530;
+    --text: #f6f4f1; --muted: #9c958d; --accent: #8b8680; --accent-h: #9a948e;
+    --amber: #f59e0b; --gray: #9c958d;
   }
   * { box-sizing: border-box; }
   body {
     margin: 0; background: var(--bg); color: var(--text);
-    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
   }
   header {
     display: flex; flex-wrap: wrap; gap: 16px; align-items: center; justify-content: space-between;
@@ -51,10 +60,10 @@
   .check { display: flex; align-items: center; gap: 8px; padding-top: 22px; }
   .check input { width: auto; }
   .check label { margin: 0; color: var(--text); font-size: 13px; }
-  .note { margin: 0 0 14px; padding: 8px 12px; border-left: 3px solid var(--amber); background: rgba(224,164,58,.08); color: #d8c08a; font-size: 13px; border-radius: 0 6px 6px 0; }
+  .note { margin: 0 0 14px; padding: 8px 12px; border-left: 3px solid var(--amber); background: color-mix(in srgb, var(--amber) 8%, transparent); color: var(--text); font-size: 13px; border-radius: 0 6px 6px 0; }
   .msg { margin-top: 10px; font-size: 13px; min-height: 18px; }
   .msg.ok { color: var(--green); } .msg.err { color: var(--red); }
-  .banner { padding: 10px 14px; border-radius: 6px; background: rgba(229,88,79,.12); border: 1px solid var(--red); color: #f2a09a; display: none; }
+  .banner { padding: 10px 14px; border-radius: 6px; background: color-mix(in srgb, var(--red) 12%, transparent); border: 1px solid var(--red); color: var(--red); display: none; }
   .banner.show { display: block; }
   .tablewrap { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; }
@@ -64,10 +73,10 @@
   td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
   .muted { color: var(--muted); }
   .badge { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; border: 1px solid; white-space: nowrap; }
-  .badge.green { color: var(--green); border-color: rgba(63,185,122,.4); background: rgba(63,185,122,.1); }
-  .badge.amber { color: var(--amber); border-color: rgba(224,164,58,.4); background: rgba(224,164,58,.1); }
-  .badge.red { color: var(--red); border-color: rgba(229,88,79,.4); background: rgba(229,88,79,.1); }
-  .badge.gray { color: var(--gray); border-color: rgba(124,132,148,.4); background: rgba(124,132,148,.1); }
+  .badge.green { color: var(--green); border-color: color-mix(in srgb, var(--green) 40%, transparent); background: color-mix(in srgb, var(--green) 10%, transparent); }
+  .badge.amber { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 40%, transparent); background: color-mix(in srgb, var(--amber) 10%, transparent); }
+  .badge.red { color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, transparent); background: color-mix(in srgb, var(--red) 10%, transparent); }
+  .badge.gray { color: var(--gray); border-color: color-mix(in srgb, var(--gray) 40%, transparent); background: color-mix(in srgb, var(--gray) 10%, transparent); }
   .actions { display: flex; gap: 6px; white-space: nowrap; }
   .empty { padding: 28px; text-align: center; color: var(--muted); }
   .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 12px; flex-wrap: wrap; }
@@ -111,7 +120,6 @@
     <h2>Settings</h2>
     <form id="settings" autocomplete="off">
       <div class="grid">
-        <div><label for="s-key">DeepInfra API key</label><input id="s-key" type="password" placeholder="Not set" spellcheck="false"></div>
         <div><label for="s-idle">Scale to zero after idle (minutes)</label><input id="s-idle" type="text" inputmode="numeric" placeholder="30"></div>
         <div><label for="s-max">Max continuous uptime (minutes)</label><input id="s-max" type="text" inputmode="numeric" placeholder="720"></div>
       </div>
@@ -157,7 +165,29 @@
   var gpuSig = "";
 
   if (window.self !== window.top) document.documentElement.classList.add("embedded");
+  syncTheme();
   try { keyInput.value = localStorage.getItem(KEY_NAME) || ""; } catch (e) {}
+
+  function syncTheme() {
+    var root = document.documentElement;
+    var panel = null;
+    try { panel = window.self !== window.top ? window.parent.document.documentElement : null; } catch (e) {}
+    if (panel) {
+      var copy = function () {
+        var theme = panel.getAttribute("data-theme");
+        if (theme) root.setAttribute("data-theme", theme); else root.removeAttribute("data-theme");
+      };
+      copy();
+      new MutationObserver(copy).observe(panel, { attributes: true, attributeFilter: ["data-theme"] });
+      return;
+    }
+    var dark = window.matchMedia("(prefers-color-scheme: dark)");
+    var follow = function () {
+      root.setAttribute("data-theme", dark.matches ? "dark" : "white"); // the panel's "auto" theme
+    };
+    follow();
+    dark.addEventListener("change", follow);
+  }
 
   function el(tag, cls, text) {
     var n = document.createElement(tag);
@@ -377,7 +407,7 @@
       state.models = Array.isArray(d.models) ? d.models : [];
       state.gpus = Array.isArray(d.gpus) ? d.gpus : [];
       state.idle = d.idle_minutes != null ? d.idle_minutes : null;
-      showBanner(d.deepinfra_error ? "Can't reach DeepInfra, so model status is unknown (check the API key under Settings): " + d.deepinfra_error : "");
+      showBanner(d.deepinfra_error ? "Can't reach DeepInfra, so model status is unknown (check the api-key under Plugins → DeepInfra Autoscale → Edit config): " + d.deepinfra_error : "");
       keyInput.classList.remove("attn");
       renderGpuOptions(); renderCost(); renderList();
     }).catch(function (e) {
@@ -461,8 +491,6 @@
   }
   function loadSettings() {
     return mgmt("GET").then(function (cfg) {
-      $("s-key").value = "";
-      $("s-key").placeholder = cfg["api-key"] ? "Saved (type to replace)" : "Not set";
       $("s-idle").value = cfg["idle-minutes"] != null ? cfg["idle-minutes"] : "";
       $("s-max").value = cfg["max-uptime-minutes"] != null ? cfg["max-uptime-minutes"] : "";
     }).catch(function () {});
@@ -480,12 +508,10 @@
       idle = minutesField("s-idle", "Idle window");
       max = minutesField("s-max", "Max uptime");
     } catch (e) { setSettingsMsg(e.message, "err"); return; }
-    var apiKey = $("s-key").value.trim();
     $("s-save").disabled = true;
     setSettingsMsg("Saving...", "");
     // NOTE: the endpoint replaces the whole plugin config, so merge into the current one.
     mgmt("GET").then(function (cfg) {
-      if (apiKey) cfg["api-key"] = apiKey;
       if (idle == null) delete cfg["idle-minutes"]; else cfg["idle-minutes"] = idle;
       if (max == null) delete cfg["max-uptime-minutes"]; else cfg["max-uptime-minutes"] = max;
       return mgmt("PUT", cfg);

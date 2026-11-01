@@ -31,8 +31,9 @@ Everything is done in the CLIProxyAPI management panel; no file edits.
    and save.
 2. **Plugin Store**: search `deepinfra`, click **Install**, and confirm. It downloads the `.so` from
    the latest GitHub Release and loads it without a restart.
-3. **PLUGINS → DeepInfra Autoscale** in the sidebar: enter the management key once (the page
-   remembers it), set the DeepInfra API key and idle window under **Settings**, and add models.
+3. **Plugins → DeepInfra Autoscale → Edit config**: paste your DeepInfra API key into `api-key`.
+4. **PLUGINS → DeepInfra Autoscale** in the sidebar: enter the management key once (the page
+   remembers it), then add models and, under **Settings**, adjust the idle window and max uptime.
 
 ## Install manually
 
@@ -47,7 +48,7 @@ plugins:
     deepinfra-autoscale:
       enabled: true
       priority: 1
-      api-key: "<deepinfra api key>"   # or set it in the dashboard under Settings
+      api-key: "<deepinfra api key>"   # or in the panel: Plugins → Edit config
       idle-minutes: 30                 # scale to zero after this many idle minutes (default 30)
       max-uptime-minutes: 720          # hard backstop (default 720 = 12h)
       state-file: "~/.cli-proxy-api/deepinfra-autoscale-state.json"
