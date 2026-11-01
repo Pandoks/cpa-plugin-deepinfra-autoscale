@@ -108,11 +108,27 @@
   </section>
 
   <section>
+    <h2>Settings</h2>
+    <form id="settings" autocomplete="off">
+      <div class="grid">
+        <div><label for="s-key">DeepInfra API key</label><input id="s-key" type="password" placeholder="Not set" spellcheck="false"></div>
+        <div><label for="s-idle">Scale to zero after idle (minutes)</label><input id="s-idle" type="text" inputmode="numeric" placeholder="30"></div>
+        <div><label for="s-max">Max continuous uptime (minutes)</label><input id="s-max" type="text" inputmode="numeric" placeholder="720"></div>
+      </div>
+      <div style="margin-top:14px;display:flex;align-items:center;gap:12px">
+        <button class="primary" id="s-save" type="submit">Save settings</button>
+        <span id="s-msg" class="msg" style="margin:0"></span>
+      </div>
+    </form>
+  </section>
+
+  <section>
     <h2>Add model</h2>
     <p class="note">Creating a model provisions GPUs on DeepInfra and bills while running; models scale to zero after the idle window.</p>
     <form id="form" autocomplete="off">
       <div class="grid">
         <div><label for="f-id">Model id *</label><input id="f-id" type="text" required placeholder="red-snow-5.3-flash"></div>
+        <div><label for="f-name">Name in Claude Code</label><input id="f-name" type="text" maxlength="64" placeholder="RED-SNOW 5.3 Flash"></div>
         <div><label for="f-repo">HF repo *</label><input id="f-repo" type="text" required placeholder="Blackfrost-AI/RED-SNOW-5.3-FLASH-NVFP4"></div>
         <div><label for="f-rev">Revision (commit sha)</label><input id="f-rev" type="text" placeholder="optional"></div>
         <div><label for="f-gpu">GPU *</label><select id="f-gpu" required><option value="">Loading...</option></select></div>
@@ -297,7 +313,9 @@
     state.models.forEach(function (m) {
       var tr = el("tr");
 
-      var tdId = el("td", "mono", m.id);
+      var tdId = el("td");
+      if (m.display_name) tdId.appendChild(el("div", null, m.display_name));
+      tdId.appendChild(el("div", m.display_name ? "sub mono" : "mono", m.id));
       tr.appendChild(tdId);
 
       var tdRepo = el("td");
@@ -359,7 +377,7 @@
       state.models = Array.isArray(d.models) ? d.models : [];
       state.gpus = Array.isArray(d.gpus) ? d.gpus : [];
       state.idle = d.idle_minutes != null ? d.idle_minutes : null;
-      showBanner(d.deepinfra_error ? "Can't reach DeepInfra, so model status is unknown (check the plugin's api-key): " + d.deepinfra_error : "");
+      showBanner(d.deepinfra_error ? "Can't reach DeepInfra, so model status is unknown (check the API key under Settings): " + d.deepinfra_error : "");
       keyInput.classList.remove("attn");
       renderGpuOptions(); renderCost(); renderList();
     }).catch(function (e) {
@@ -398,6 +416,7 @@
     if (!gpu) { setFormMsg("Select a GPU.", "err"); return; }
     var body = {
       id: $("f-id").value.trim(),
+      display_name: $("f-name").value.trim(),
       hf_repo: $("f-repo").value.trim(),
       revision: $("f-rev").value.trim(),
       gpu: gpu,
@@ -412,7 +431,7 @@
     btn.disabled = true;
     setFormMsg("Submitting...", "");
     api("POST", "", body).then(function (d) {
-      setFormMsg("Model \"" + ((d.model && d.model.id) || body.id) + "\" added. It will appear in the model list after the next Claude Code restart.", "ok");
+      setFormMsg("Model \"" + ((d.model && d.model.id) || body.id) + "\" added. It appears in Claude Code's /model picker after Claude Code restarts.", "ok");
       $("form").reset();
       return syncModels(); // refresh /v1/models so the model shows in the picker
     }).then(function () {
@@ -422,13 +441,72 @@
     }).then(function () { btn.disabled = false; });
   });
 
+  /* ---------- settings (stored in this plugin's CLIProxyAPI config) ---------- */
+  var CONFIG = "/v8/management/config/plugins/configs/deepinfra-autoscale";
+  function mgmt(method, body) {
+    var opts = { method: method, headers: { "Authorization": "Bearer " + keyInput.value.trim() } };
+    if (body !== undefined) {
+      opts.headers["Content-Type"] = "application/json";
+      opts.body = JSON.stringify(body);
+    }
+    return fetch(CONFIG, opts).then(function (res) {
+      if (res.status === 401) { authFail(); throw new Error("Management key required or invalid"); }
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      return res.json();
+    });
+  }
+  function setSettingsMsg(text, kind) {
+    $("s-msg").textContent = text || "";
+    $("s-msg").className = "msg" + (kind ? " " + kind : "");
+  }
+  function loadSettings() {
+    return mgmt("GET").then(function (cfg) {
+      $("s-key").value = "";
+      $("s-key").placeholder = cfg["api-key"] ? "Saved (type to replace)" : "Not set";
+      $("s-idle").value = cfg["idle-minutes"] != null ? cfg["idle-minutes"] : "";
+      $("s-max").value = cfg["max-uptime-minutes"] != null ? cfg["max-uptime-minutes"] : "";
+    }).catch(function () {});
+  }
+  function minutesField(id, label) {
+    var v = $(id).value.trim();
+    if (v === "") return null;
+    if (!/^[0-9]+$/.test(v) || Number(v) <= 0) throw new Error(label + " must be a positive whole number of minutes.");
+    return Number(v);
+  }
+  $("settings").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var idle, max;
+    try {
+      idle = minutesField("s-idle", "Idle window");
+      max = minutesField("s-max", "Max uptime");
+    } catch (e) { setSettingsMsg(e.message, "err"); return; }
+    var apiKey = $("s-key").value.trim();
+    $("s-save").disabled = true;
+    setSettingsMsg("Saving...", "");
+    // NOTE: the endpoint replaces the whole plugin config, so merge into the current one.
+    mgmt("GET").then(function (cfg) {
+      if (apiKey) cfg["api-key"] = apiKey;
+      if (idle == null) delete cfg["idle-minutes"]; else cfg["idle-minutes"] = idle;
+      if (max == null) delete cfg["max-uptime-minutes"]; else cfg["max-uptime-minutes"] = max;
+      return mgmt("PUT", cfg);
+    }).then(function () {
+      setSettingsMsg("Saved.", "ok");
+      return loadSettings();
+    }).then(function () {
+      return load();
+    }).catch(function (e) {
+      setSettingsMsg(e.message, "err");
+    }).then(function () { $("s-save").disabled = false; });
+  });
+
   keyInput.addEventListener("input", function () {
     try { localStorage.setItem(KEY_NAME, keyInput.value); } catch (e) {}
   });
-  keyInput.addEventListener("change", function () { load(); });
+  keyInput.addEventListener("change", function () { load(); loadSettings(); });
   $("refresh").addEventListener("click", function () { load(); });
 
   load();
+  loadSettings();
   setInterval(load, 15000);
   setInterval(renderList, 30000);
 })();

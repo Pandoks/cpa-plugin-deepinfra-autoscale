@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
@@ -18,6 +19,7 @@ import (
 // state file so it survives restarts.
 type Model struct {
 	ID              string `json:"id"`
+	DisplayName     string `json:"display_name,omitempty"`
 	HFRepo          string `json:"hf_repo"`
 	Revision        string `json:"revision,omitempty"`
 	GPU             string `json:"gpu"` // full config, e.g. "2xH200-141GB"
@@ -52,11 +54,15 @@ func (m *Model) validate() error {
 	if m.Context <= 0 {
 		return fmt.Errorf("context must be positive")
 	}
+	if utf8.RuneCountInString(m.DisplayName) > 64 {
+		return fmt.Errorf("display name is longer than 64 characters")
+	}
 	return nil
 }
 
 // normalize fills derived/default fields.
 func (m *Model) normalize() {
+	m.DisplayName = strings.TrimSpace(m.DisplayName)
 	if _, n, err := parseGPU(m.GPU); err == nil {
 		m.NumGPUs = n
 	}
@@ -270,13 +276,17 @@ func (m *Model) toModelInfo() pluginapi.ModelInfo {
 	if name == "" {
 		name = m.ID
 	}
+	displayName := m.DisplayName
+	if displayName == "" {
+		displayName = m.ID
+	}
 	return pluginapi.ModelInfo{
 		ID:                         m.ID,
 		Object:                     "model",
 		Created:                    time.Now().Unix(),
 		OwnedBy:                    "deepinfra",
 		Type:                       "chat",
-		DisplayName:                m.ID,
+		DisplayName:                displayName,
 		Name:                       name,
 		Description:                fmt.Sprintf("DeepInfra %s on %s", m.HFRepo, m.GPU),
 		ContextLength:              m.Context,

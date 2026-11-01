@@ -82,6 +82,7 @@ func handleManagementHandle(req []byte) []byte {
 
 type modelView struct {
 	ID              string  `json:"id"`
+	DisplayName     string  `json:"display_name,omitempty"`
 	HFRepo          string  `json:"hf_repo"`
 	Revision        string  `json:"revision,omitempty"`
 	GPU             string  `json:"gpu"`
@@ -122,7 +123,7 @@ func listModelsResponse(cb string) pluginapi.ManagementResponse {
 		lastUsed, _ := modelStore.activity(m.ID)
 		dep := depByID[m.ID]
 		v := modelView{
-			ID: m.ID, HFRepo: m.HFRepo, Revision: m.Revision, GPU: m.GPU, NumGPUs: m.NumGPUs,
+			ID: m.ID, DisplayName: m.DisplayName, HFRepo: m.HFRepo, Revision: m.Revision, GPU: m.GPU, NumGPUs: m.NumGPUs,
 			Context: m.Context, Quantization: m.Quantization, ToolParser: m.ToolParser,
 			ReasoningParser: m.ReasoningParser, EnableThinking: m.EnableThinking,
 			DeployID: m.DeployID, LastUsedUnix: lastUsed, USDPerHour: gpuPrice(m.GPU),

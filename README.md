@@ -24,21 +24,15 @@ CLIProxyAPI restart (which also re-adopts any still-running deployment so it is 
 
 ## Install from the plugin panel (recommended)
 
-1. Add this repo's registry to `plugins.store-sources` in `config.yaml`:
+Everything is done in the CLIProxyAPI management panel; no file edits.
 
-   ```yaml
-   plugins:
-     enabled: true
-     store-sources:
-       - https://raw.githubusercontent.com/Pandoks/cpa-plugin-deepinfra-autoscale/main/registry.json
-   ```
-
-2. In the management panel, open **Plugin Store**, search `deepinfra`, click **Install**, and confirm.
-   It downloads the `.so` from the latest GitHub Release and loads it without a restart.
-3. Open **Plugins → DeepInfra Autoscale → Edit config**, paste your DeepInfra API key into `api-key`,
-   and save. Changes apply live.
-4. Open **DeepInfra Autoscale** under **PLUGINS** in the sidebar, enter the management key once (the
-   page remembers it), and add models.
+1. **Config Panel → Advanced & Experimental → Plugins → Third-party Plugin Sources**: add
+   `https://raw.githubusercontent.com/Pandoks/cpa-plugin-deepinfra-autoscale/main/registry.json`
+   and save.
+2. **Plugin Store**: search `deepinfra`, click **Install**, and confirm. It downloads the `.so` from
+   the latest GitHub Release and loads it without a restart.
+3. **PLUGINS → DeepInfra Autoscale** in the sidebar: enter the management key once (the page
+   remembers it), set the DeepInfra API key and idle window under **Settings**, and add models.
 
 ## Install manually
 
@@ -53,7 +47,7 @@ plugins:
     deepinfra-autoscale:
       enabled: true
       priority: 1
-      api-key: "<deepinfra api key>"   # also settable from the dashboard config fields
+      api-key: "<deepinfra api key>"   # or set it in the dashboard under Settings
       idle-minutes: 30                 # scale to zero after this many idle minutes (default 30)
       max-uptime-minutes: 720          # hard backstop (default 720 = 12h)
       state-file: "~/.cli-proxy-api/deepinfra-autoscale-state.json"
@@ -76,19 +70,13 @@ use (or an explicit Wake). The GPU field is the DeepInfra config string, e.g. `2
 ## Using it from Claude Code
 
 With `ANTHROPIC_BASE_URL` pointing at CLIProxyAPI and `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`,
-every model you add shows up in `/model` as "From gateway" after the next Claude Code restart.
+every model you add shows up in `/model` under its **Name in Claude Code** after the next Claude
+Code restart, and disappears when you remove it.
 
-CLIProxyAPI's `/v1/models` carries no context window, so to give a model its full window add a
-labeled row to `modelPicker` in your user settings; the `[1m]` suffix tells Claude Code the model
-has a 1M window and the plugin strips it when routing:
-
-```json
-"modelPicker": {
-  "options": [
-    { "model": "red-snow[1m]", "label": "RED-SNOW 5.3 Flash (1M)", "description": "DeepInfra · scales to zero when idle" }
-  ]
-}
-```
+CLIProxyAPI lists non-Claude models to Claude clients as `claude-fable-5-dd-<reversed id>` and
+decodes that back when routing, so Claude Code treats every managed model as Fable 5, including a
+1M context window. That matches 1M-context models; for a smaller model Claude Code will not compact
+before the model's real limit.
 
 The first request to a scaled-to-zero model starts its deployment and returns `503 warming up`
 (Claude Code retries) for the ~12-minute cold start.
