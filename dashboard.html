@@ -187,6 +187,18 @@
     });
   }
 
+  // After the model set changes (add/remove), trigger a CPA config reload so the models are
+  // re-pulled into /v1/models (and thus Claude Code's model picker). This writes a changing nonce
+  // under this plugin's own config block via CPA's config API, which saves preserving comments and
+  // reloads. Best-effort: a failure just means the picker refreshes on the next CPA reload.
+  function syncModels() {
+    return fetch("/v8/management/config", {
+      method: "PATCH",
+      headers: { "Authorization": "Bearer " + keyInput.value.trim(), "Content-Type": "application/json" },
+      body: JSON.stringify({ plugins: { configs: { "deepinfra-autoscale": { "sync-nonce": Date.now() } } } })
+    }).catch(function () {});
+  }
+
   /* ---------- formatting ---------- */
   function fmtContext(n) {
     n = Number(n);
@@ -357,7 +369,9 @@
     delete state.rowErr[id];
     renderList();
     var path = method === "DELETE" ? "?id=" + encodeURIComponent(id) : suffix + encodeURIComponent(id);
-    api(method, path).catch(function (e) {
+    api(method, path).then(function () {
+      if (method === "DELETE") return syncModels(); // model set changed -> refresh /v1/models
+    }).catch(function (e) {
       state.rowErr[id] = e.message;
     }).then(function () {
       delete state.busy[id];
@@ -395,8 +409,10 @@
     btn.disabled = true;
     setFormMsg("Submitting...", "");
     api("POST", "", body).then(function (d) {
-      setFormMsg("Model \"" + ((d.model && d.model.id) || body.id) + "\" added.", "ok");
+      setFormMsg("Model \"" + ((d.model && d.model.id) || body.id) + "\" added. It will appear in the model list after the next Claude Code restart.", "ok");
       $("form").reset();
+      return syncModels(); // refresh /v1/models so the model shows in the picker
+    }).then(function () {
       return load();
     }).catch(function (e) {
       setFormMsg(e.message, "err");

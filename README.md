@@ -22,7 +22,24 @@ Because the plugin is in the request path, **activity is tracked automatically**
 no external state store, no separate worker. Model definitions are persisted so they survive a
 CLIProxyAPI restart (which also re-adopts any still-running deployment so it is never left billing).
 
-## Install
+## Install from the plugin panel (recommended)
+
+Add this repo's registry to `plugins.store-sources`, then install "DeepInfra Autoscale" from the
+CLIProxyAPI management panel (it downloads the `.so` from the GitHub Release):
+
+```yaml
+plugins:
+  enabled: true
+  store-sources:
+    - https://raw.githubusercontent.com/Pandoks/cpa-plugin-deepinfra-autoscale/main/registry.json
+  configs:
+    deepinfra-autoscale:
+      enabled: true
+      priority: 1
+      api-key: "<deepinfra api key>"
+```
+
+## Install manually
 
 Drop the built library at `<plugins.dir>/linux/amd64/deepinfra-autoscale.so` and enable it in
 `config.yaml`:
@@ -57,8 +74,15 @@ use (or an explicit Wake). The GPU field is the DeepInfra config string, e.g. `2
 
 ## Using it from Claude Code
 
-Point Claude Code at CLIProxyAPI as usual and just use the model id — the plugin handles routing,
-wake, and idle scale-down. No hooks or extra env are required beyond naming the model:
+With gateway model discovery on (`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`), models you add in
+the dashboard appear in Claude Code's **model picker** — just select one, no `--model` flag or hooks
+needed. When you add a model the dashboard triggers a CLIProxyAPI reload so it shows in `/v1/models`;
+restart Claude Code once for it to re-discover the list. (Routing works immediately regardless of
+the listing.)
+
+CLIProxyAPI's `/v1/models` is minimal (id + owner only), so the picker doesn't convey the context
+window. For the full 1M window, select the model and set the window explicitly — either the `[1m]`
+variant or the env var:
 
 ```sh
 # main chat 1M context, subagents 256k, both on the same deployment
@@ -67,9 +91,7 @@ CLAUDE_CODE_MAX_CONTEXT_TOKENS=262144 \
   claude --model 'red-snow[1m]'
 ```
 
-The `[1m]` suffix tells Claude Code the model has a 1M window; the plugin normalizes it when
-routing. A newly added model is routable immediately; it appears in `/v1/models` after the next
-CLIProxyAPI config reload (routing does not depend on the listing).
+The `[1m]` suffix tells Claude Code the model has a 1M window; the plugin normalizes it when routing.
 
 ## Cost safety
 
