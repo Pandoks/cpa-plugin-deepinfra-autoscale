@@ -47,9 +47,10 @@ func dispatch(method string, req []byte) (out []byte) {
 		return handleUsage(req)
 
 	case pluginabi.MethodPluginQuiesce, pluginabi.MethodPluginShutdown:
-		// The host is still alive here, so best-effort stop every running deployment to halt GPU
-		// billing before CPA goes down, then stop the local ticker.
-		stopAllRunning()
+		// Stop the ticker cleanly while the host is still alive, so it can't fire after the plugin
+		// is unloaded/replaced. Running deployments are intentionally left as-is: a config reload
+		// quiesces too, and the replacement instance re-adopts them (bounded by the idle window);
+		// a real CPA shutdown relies on that re-adoption on restart plus a DeepInfra spending limit.
 		stopAutoscaler()
 		return envelope(struct{}{}, nil)
 	}

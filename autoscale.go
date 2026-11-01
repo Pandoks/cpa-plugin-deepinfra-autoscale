@@ -151,6 +151,7 @@ var (
 	autoscaleMu   sync.Mutex
 	autoscaleOn   bool
 	autoscaleStop chan struct{}
+	autoscaleWG   sync.WaitGroup
 )
 
 const autoscaleInterval = 60 * time.Second
@@ -164,7 +165,9 @@ func startAutoscaler() {
 	autoscaleOn = true
 	stop := make(chan struct{})
 	autoscaleStop = stop
+	autoscaleWG.Add(1)
 	go func() {
+		defer autoscaleWG.Done()
 		ticker := time.NewTicker(autoscaleInterval)
 		defer ticker.Stop()
 		for {
@@ -178,38 +181,19 @@ func startAutoscaler() {
 	}()
 }
 
+// stopAutoscaler stops the ticker and waits for its goroutine to fully exit. It is called only from
+// the plugin.quiesce RPC handler (host alive), so the goroutine can never run after the plugin's
+// .so is detached/unloaded, which would crash.
 func stopAutoscaler() {
 	autoscaleMu.Lock()
-	defer autoscaleMu.Unlock()
 	if !autoscaleOn {
+		autoscaleMu.Unlock()
 		return
 	}
 	autoscaleOn = false
 	close(autoscaleStop)
-}
-
-// shutdown is the process-exit hook. The host may already be tearing down, so it only stops the
-// local ticker; the quiesce/shutdown ABI handler does the best-effort remote stop while the host
-// is still alive (see stopAllRunning).
-func shutdown() { stopAutoscaler() }
-
-// stopAllRunning best-effort stops every model we believe is running, so taking CPA down (quiesce)
-// doesn't leave GPUs billing. Called from the quiesce/shutdown ABI handler while the host can still
-// service outbound calls.
-func stopAllRunning() {
-	for _, m := range modelStore.list() {
-		if m.DeployID == "" {
-			continue
-		}
-		if _, runStart := modelStore.activity(m.ID); runStart == 0 {
-			continue
-		}
-		if err := diStop("", m.DeployID); err != nil {
-			hostLog("warn", fmt.Sprintf("deepinfra-autoscale: shutdown stop %s: %v", m.ID, err))
-			continue
-		}
-		modelStore.clearRunning(m.ID)
-	}
+	autoscaleMu.Unlock()
+	autoscaleWG.Wait()
 }
 
 // runIdleSweep scales to zero any running model idle past the window, deletes stuck provisioning
@@ -255,12 +239,9 @@ func runIdleSweep() {
 
 		// Stuck provisioning: a deployment that never reaches running can't be stopped (DeepInfra
 		// rejects /stop on non-running), so delete it once it blows the max-uptime backstop.
-		if dep.Status == "deploying" || dep.Status == "downloading" || dep.Status == "initializing" {
+		if isProvisioning(dep.Status) {
 			if runStart > 0 && now-runStart > maxUptime {
-				if err := diDelete("", dep.DeployID); err == nil {
-					modelStore.clearRunning(m.ID)
-					hostLog("warn", fmt.Sprintf("deepinfra-autoscale: deleted stuck %s (%s > max-uptime)", m.ID, dep.Status))
-				}
+				deleteStuck(m.ID, dep.DeployID)
 			}
 			continue
 		}
@@ -278,6 +259,29 @@ func runIdleSweep() {
 		if shouldStop(lastUsed, runStart, now, idleCutoff, maxUptime) {
 			stopIdle(m.ID, dep.DeployID, now, idleCutoff, maxUptime)
 		}
+	}
+}
+
+func isProvisioning(status string) bool {
+	return status == "deploying" || status == "downloading" || status == "initializing"
+}
+
+// deleteStuck deletes a deployment stuck provisioning past the backstop, under the per-id lock with
+// a re-check so it can't delete a deployment that a concurrent wake just replaced.
+func deleteStuck(id, deployID string) {
+	unlock := modelStore.lock(id)
+	defer unlock()
+	m, ok := modelStore.get(id)
+	if !ok || m.DeployID != deployID {
+		return // model removed or deployment replaced concurrently
+	}
+	dep, err := diFind("", m)
+	if err != nil || dep == nil || dep.Status == "running" || dep.stopped() {
+		return // recovered or gone
+	}
+	if err := diDelete("", deployID); err == nil {
+		modelStore.clearRunning(id)
+		hostLog("warn", fmt.Sprintf("deepinfra-autoscale: deleted stuck %s (%s > max-uptime)", id, dep.Status))
 	}
 }
 

@@ -84,8 +84,14 @@ func cliproxyPluginCall(method *C.char, req *C.uint8_t, n C.size_t, resp *C.clip
 //export cliproxyPluginFree
 func cliproxyPluginFree(ptr unsafe.Pointer, _ C.size_t) { C.free(ptr) }
 
+// cliproxyPluginShutdown is the C unload hook. It must be a no-op: it runs during the host's
+// dlclose while the Go runtime is being torn down, so doing any Go-runtime work here (locks,
+// channel ops, goroutine scheduling) risks a SIGILL. The ticker is stopped earlier, in the
+// plugin.quiesce RPC handler, which runs while the host is fully alive. On a process exit the
+// ticker goroutine simply dies with the process.
+//
 //export cliproxyPluginShutdown
-func cliproxyPluginShutdown() { shutdown() }
+func cliproxyPluginShutdown() {}
 
 // callHost invokes a host callback method with a JSON request and returns the decoded envelope
 // result bytes. The C host-call shim is only visible to this file's cgo preamble, so every host

@@ -106,12 +106,9 @@ func listModelsResponse(cb string) pluginapi.ManagementResponse {
 	depByID := map[string]*diDeployment{}
 	if all, err := diList(cb); err == nil {
 		for i := range all {
-			if diGone[all[i].Status] {
-				continue
-			}
 			dep := &all[i]
 			for _, m := range models {
-				if dep.DeployID == m.DeployID || dep.ModelName == m.ID || strings.HasSuffix(dep.ModelName, "/"+m.ID) {
+				if dep.matchesModel(m) {
 					depByID[m.ID] = dep
 				}
 			}
