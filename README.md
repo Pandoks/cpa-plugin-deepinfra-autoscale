@@ -24,20 +24,21 @@ CLIProxyAPI restart (which also re-adopts any still-running deployment so it is 
 
 ## Install from the plugin panel (recommended)
 
-Add this repo's registry to `plugins.store-sources`, then install "DeepInfra Autoscale" from the
-CLIProxyAPI management panel (it downloads the `.so` from the GitHub Release):
+1. Add this repo's registry to `plugins.store-sources` in `config.yaml`:
 
-```yaml
-plugins:
-  enabled: true
-  store-sources:
-    - https://raw.githubusercontent.com/Pandoks/cpa-plugin-deepinfra-autoscale/main/registry.json
-  configs:
-    deepinfra-autoscale:
-      enabled: true
-      priority: 1
-      api-key: "<deepinfra api key>"
-```
+   ```yaml
+   plugins:
+     enabled: true
+     store-sources:
+       - https://raw.githubusercontent.com/Pandoks/cpa-plugin-deepinfra-autoscale/main/registry.json
+   ```
+
+2. In the management panel, open **Plugin Store**, search `deepinfra`, click **Install**, and confirm.
+   It downloads the `.so` from the latest GitHub Release and loads it without a restart.
+3. Open **Plugins → DeepInfra Autoscale → Edit config**, paste your DeepInfra API key into `api-key`,
+   and save. Changes apply live.
+4. Open **DeepInfra Autoscale** under **PLUGINS** in the sidebar, enter the management key once (the
+   page remembers it), and add models.
 
 ## Install manually
 
@@ -74,24 +75,23 @@ use (or an explicit Wake). The GPU field is the DeepInfra config string, e.g. `2
 
 ## Using it from Claude Code
 
-With gateway model discovery on (`CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`), models you add in
-the dashboard appear in Claude Code's **model picker** — just select one, no `--model` flag or hooks
-needed. When you add a model the dashboard triggers a CLIProxyAPI reload so it shows in `/v1/models`;
-restart Claude Code once for it to re-discover the list. (Routing works immediately regardless of
-the listing.)
+With `ANTHROPIC_BASE_URL` pointing at CLIProxyAPI and `CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1`,
+every model you add shows up in `/model` as "From gateway" after the next Claude Code restart.
 
-CLIProxyAPI's `/v1/models` is minimal (id + owner only), so the picker doesn't convey the context
-window. For the full 1M window, select the model and set the window explicitly — either the `[1m]`
-variant or the env var:
+CLIProxyAPI's `/v1/models` carries no context window, so to give a model its full window add a
+labeled row to `modelPicker` in your user settings; the `[1m]` suffix tells Claude Code the model
+has a 1M window and the plugin strips it when routing:
 
-```sh
-# main chat 1M context, subagents 256k, both on the same deployment
-CLAUDE_CODE_SUBAGENT_MODEL=red-snow \
-CLAUDE_CODE_MAX_CONTEXT_TOKENS=262144 \
-  claude --model 'red-snow[1m]'
+```json
+"modelPicker": {
+  "options": [
+    { "model": "red-snow[1m]", "label": "RED-SNOW 5.3 Flash (1M)", "description": "DeepInfra · scales to zero when idle" }
+  ]
+}
 ```
 
-The `[1m]` suffix tells Claude Code the model has a 1M window; the plugin normalizes it when routing.
+The first request to a scaled-to-zero model starts its deployment and returns `503 warming up`
+(Claude Code retries) for the ~12-minute cold start.
 
 ## Cost safety
 

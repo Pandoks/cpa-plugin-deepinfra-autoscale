@@ -102,9 +102,11 @@ func listModelsResponse(cb string) pluginapi.ManagementResponse {
 	models := modelStore.list()
 	gpus, _ := diGPUs(cb) // best-effort; prices/catalog
 
-	// Index live deployments (best-effort).
+	// Index live deployments. On a list failure every status is unknown, not scaled-to-zero, so a
+	// dead key or a DeepInfra outage can't make a billing deployment look stopped.
 	depByID := map[string]*diDeployment{}
-	if all, err := diList(cb); err == nil {
+	all, listErr := diList(cb)
+	if listErr == nil {
 		for i := range all {
 			dep := &all[i]
 			for _, m := range models {
@@ -126,6 +128,9 @@ func listModelsResponse(cb string) pluginapi.ManagementResponse {
 			DeployID: m.DeployID, LastUsedUnix: lastUsed, USDPerHour: gpuPrice(m.GPU),
 			Status: "scaled-to-zero", MinInstances: 0,
 		}
+		if listErr != nil {
+			v.Status = "unknown"
+		}
 		if dep != nil {
 			v.Status = dashboardStatus(dep)
 			v.DeployID = dep.DeployID
@@ -137,11 +142,15 @@ func listModelsResponse(cb string) pluginapi.ManagementResponse {
 	}
 
 	cfg := getConfig()
-	return jsonResponse(http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"models":       views,
 		"gpus":         gpus,
 		"idle_minutes": cfg.IdleMinutes,
-	})
+	}
+	if listErr != nil {
+		resp["deepinfra_error"] = listErr.Error()
+	}
+	return jsonResponse(http.StatusOK, resp)
 }
 
 func addModelResponse(body []byte) pluginapi.ManagementResponse {
