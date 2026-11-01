@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "plugins": [
+    {
+      "id": "deepinfra-autoscale",
+      "name": "DeepInfra Autoscale",
+      "description": "Serve and autoscale your own Hugging Face weights on DeepInfra: registers your models with CLIProxyAPI, routes requests to your deployments, and scales them up and down with demand.",
+      "author": "Pandoks",
+      "repository": "https://github.com/Pandoks/cpa-plugin-deepinfra-autoscale",
+      "homepage": "https://github.com/Pandoks/cpa-plugin-deepinfra-autoscale",
+      "tags": ["DeepInfra", "Hugging Face", "Autoscaling", "Self-hosted models"],
+      "install": { "type": "github-release" },
+      "license": "MIT"
+    }
+  ]
+}
