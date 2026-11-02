@@ -202,16 +202,30 @@
     b.classList.toggle("show", !!text);
   }
 
+  // WARNING: CPA bans the client IP for 30 minutes after 5 rejected management keys, and behind a
+  // proxy that is every client. Never send an empty key, and stop sending a rejected one until
+  // the field changes.
+  var keyRejected = false;
+  function keyBlocked() {
+    if (keyInput.value.trim() !== "" && !keyRejected) return null;
+    authFail();
+    var e = new Error("Management key required or invalid");
+    e.auth = true;
+    return e;
+  }
+
   function authFail() {
     var has = keyInput.value.trim() !== "";
     showBanner(has
-      ? "Management key invalid (401). Enter a valid key above."
-      : "Management key required (401). Enter it in the field above.");
+      ? "Management key rejected. Fix it above; nothing is sent until it changes."
+      : "Enter the management key above.");
     keyInput.classList.add("attn");
     keyInput.focus();
   }
 
   function api(method, path, body) {
+    var blocked = keyBlocked();
+    if (blocked) return Promise.reject(blocked);
     var headers = { "Authorization": "Bearer " + keyInput.value.trim() };
     var opts = { method: method, headers: headers };
     if (body !== undefined) {
@@ -223,6 +237,7 @@
         var data = null;
         try { data = txt ? JSON.parse(txt) : null; } catch (e) {}
         if (res.status === 401) {
+          keyRejected = true;
           authFail();
           var e401 = new Error("Management key required or invalid");
           e401.auth = true;
@@ -241,6 +256,7 @@
   // under this plugin's own config block via CPA's config API, which saves preserving comments and
   // reloads. Best-effort: a failure just means the picker refreshes on the next CPA reload.
   function syncModels() {
+    if (keyBlocked()) return Promise.resolve();
     return fetch("/v8/management/config", {
       method: "PATCH",
       headers: { "Authorization": "Bearer " + keyInput.value.trim(), "Content-Type": "application/json" },
@@ -474,13 +490,15 @@
   /* ---------- settings (stored in this plugin's CLIProxyAPI config) ---------- */
   var CONFIG = "/v8/management/config/plugins/configs/deepinfra-autoscale";
   function mgmt(method, body) {
+    var blocked = keyBlocked();
+    if (blocked) return Promise.reject(blocked);
     var opts = { method: method, headers: { "Authorization": "Bearer " + keyInput.value.trim() } };
     if (body !== undefined) {
       opts.headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(body);
     }
     return fetch(CONFIG, opts).then(function (res) {
-      if (res.status === 401) { authFail(); throw new Error("Management key required or invalid"); }
+      if (res.status === 401) { keyRejected = true; authFail(); throw new Error("Management key required or invalid"); }
       if (!res.ok) throw new Error("HTTP " + res.status);
       return res.json();
     });
@@ -526,13 +544,13 @@
   });
 
   keyInput.addEventListener("input", function () {
+    keyRejected = false;
     try { localStorage.setItem(KEY_NAME, keyInput.value); } catch (e) {}
   });
-  keyInput.addEventListener("change", function () { load(); loadSettings(); });
+  keyInput.addEventListener("change", function () { load().then(loadSettings); });
   $("refresh").addEventListener("click", function () { load(); });
 
-  load();
-  loadSettings();
+  load().then(loadSettings);
   setInterval(load, 15000);
   setInterval(renderList, 30000);
 })();
