@@ -13,15 +13,11 @@ import (
 // pluginConfig is the plugin's own config block under plugins.configs.deepinfra-autoscale,
 // delivered as base64 YAML in every plugin.register / plugin.reconfigure call.
 type pluginConfig struct {
-	IdleMinutes      int    `yaml:"idle-minutes"`
-	MaxUptimeMinutes int    `yaml:"max-uptime-minutes"`
-	StateFile        string `yaml:"state-file"`
+	IdleMinutes int    `yaml:"idle-minutes"`
+	StateFile   string `yaml:"state-file"`
 }
 
-const (
-	defaultIdleMinutes      = 30
-	defaultMaxUptimeMinutes = 720 // 12h backstop
-)
+const defaultIdleMinutes = 30
 
 var (
 	configMu    sync.RWMutex
@@ -37,9 +33,6 @@ func applyConfigYAML(yamlBytes []byte) pluginConfig {
 	}
 	if cfg.IdleMinutes <= 0 {
 		cfg.IdleMinutes = defaultIdleMinutes
-	}
-	if cfg.MaxUptimeMinutes <= 0 {
-		cfg.MaxUptimeMinutes = defaultMaxUptimeMinutes
 	}
 	if cfg.StateFile == "" {
 		cfg.StateFile = defaultStateFile()

@@ -196,9 +196,13 @@ func stopAutoscaler() {
 	autoscaleWG.Wait()
 }
 
-// runIdleSweep scales to zero any running model idle past the window, deletes stuck provisioning
-// deployments past the max-uptime backstop, and (on a list outage) stops believed-running models
-// blind by their recorded deploy id so an outage can't pin GPUs on.
+// stuckProvisionLimit is how long a deployment may sit provisioning (normally ~12 minutes) before
+// it is treated as stuck and deleted, so a failed start can't bill forever.
+const stuckProvisionLimit = int64(2 * 60 * 60)
+
+// runIdleSweep scales to zero any running model idle past the window, deletes deployments stuck
+// provisioning, and (on a list outage) stops believed-running models blind by their recorded
+// deploy id so an outage can't pin GPUs on. A model in use is never stopped.
 func runIdleSweep() {
 	defer func() {
 		if v := recover(); v != nil {
@@ -213,11 +217,10 @@ func runIdleSweep() {
 	}
 	now := time.Now().Unix()
 	idleCutoff := int64(cfg.IdleMinutes) * 60
-	maxUptime := int64(cfg.MaxUptimeMinutes) * 60
 
 	all, err := diList("")
 	if err != nil {
-		sweepFallback(models, now, idleCutoff, maxUptime)
+		sweepFallback(models, now, idleCutoff)
 		return
 	}
 
@@ -238,9 +241,9 @@ func runIdleSweep() {
 		lastUsed, runStart := modelStore.activity(m.ID)
 
 		// Stuck provisioning: a deployment that never reaches running can't be stopped (DeepInfra
-		// rejects /stop on non-running), so delete it once it blows the max-uptime backstop.
+		// rejects /stop on non-running), so delete it once it passes stuckProvisionLimit.
 		if isProvisioning(dep.Status) {
-			if runStart > 0 && now-runStart > maxUptime {
+			if runStart > 0 && now-runStart > stuckProvisionLimit {
 				deleteStuck(m.ID, dep.DeployID)
 			}
 			continue
@@ -256,8 +259,8 @@ func runIdleSweep() {
 			continue
 		}
 
-		if shouldStop(lastUsed, runStart, now, idleCutoff, maxUptime) {
-			stopIdle(m.ID, dep.DeployID, now, idleCutoff, maxUptime)
+		if shouldStop(lastUsed, runStart, now, idleCutoff) {
+			stopIdle(m.ID, dep.DeployID, idleCutoff)
 		}
 	}
 }
@@ -281,25 +284,24 @@ func deleteStuck(id, deployID string) {
 	}
 	if err := diDelete("", deployID); err == nil {
 		modelStore.clearRunning(id)
-		hostLog("warn", fmt.Sprintf("deepinfra-autoscale: deleted stuck %s (%s > max-uptime)", id, dep.Status))
+		hostLog("warn", fmt.Sprintf("deepinfra-autoscale: deleted %s, stuck %s for over 2h", id, dep.Status))
 	}
 }
 
-// shouldStop decides whether a running model is idle/over-backstop and should scale to zero.
-func shouldStop(lastUsed, runStart, now, idleCutoff, maxUptime int64) bool {
+// shouldStop decides whether a running model has been idle past the window and should scale to zero.
+func shouldStop(lastUsed, runStart, now, idleCutoff int64) bool {
 	idle := lastUsed > 0 && now-lastUsed > idleCutoff
 	neverUsed := lastUsed == 0 && runStart > 0 && now-runStart > idleCutoff // woken, never used
-	overMax := runStart > 0 && now-runStart > maxUptime
-	return idle || neverUsed || overMax
+	return idle || neverUsed
 }
 
 // stopIdle stops one model, re-checking idleness under the per-id lock so it can't race a wake that
 // arrived just before.
-func stopIdle(id, deployID string, now, idleCutoff, maxUptime int64) {
+func stopIdle(id, deployID string, idleCutoff int64) {
 	unlock := modelStore.lock(id)
 	defer unlock()
 	lastUsed, runStart := modelStore.activity(id)
-	if !shouldStop(lastUsed, runStart, time.Now().Unix(), idleCutoff, maxUptime) {
+	if !shouldStop(lastUsed, runStart, time.Now().Unix(), idleCutoff) {
 		return // a wake landed; leave it running
 	}
 	if err := diStop("", deployID); err != nil {
@@ -313,7 +315,7 @@ func stopIdle(id, deployID string, now, idleCutoff, maxUptime int64) {
 // sweepFallback runs when /deploy/list is unavailable: stop every believed-running, idle model by
 // its recorded deploy id, so a listing outage cannot keep GPUs billing. diStop on an
 // already-stopped deployment just errors and is ignored.
-func sweepFallback(models []*Model, now, idleCutoff, maxUptime int64) {
+func sweepFallback(models []*Model, now, idleCutoff int64) {
 	hostLog("warn", "deepinfra-autoscale: deploy/list failed; stopping idle models by recorded deploy id")
 	for _, m := range models {
 		if m.DeployID == "" {
@@ -323,7 +325,7 @@ func sweepFallback(models []*Model, now, idleCutoff, maxUptime int64) {
 		if runStart == 0 {
 			continue // not believed running
 		}
-		if shouldStop(lastUsed, runStart, now, idleCutoff, maxUptime) {
+		if shouldStop(lastUsed, runStart, now, idleCutoff) {
 			if err := diStop("", m.DeployID); err == nil {
 				modelStore.clearRunning(m.ID)
 			}

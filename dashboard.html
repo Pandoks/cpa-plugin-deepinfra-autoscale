@@ -46,6 +46,7 @@
   input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
   input.attn { outline: 2px solid var(--red); border-color: transparent; }
   .keybox { width: 260px; }
+  .keybox.hidden { display: none; }
   button {
     background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 6px;
     padding: 6px 12px; font: inherit; cursor: pointer;
@@ -91,7 +92,7 @@
     <div class="sub">Self-hosted model management</div>
   </div>
   <div class="head-right">
-    <div class="keybox">
+    <div class="keybox" id="keybox">
       <label for="key">Management key</label>
       <input id="key" type="password" autocomplete="off" placeholder="Bearer token" spellcheck="false">
     </div>
@@ -122,7 +123,6 @@
       <div class="grid">
         <div><label for="s-key">DeepInfra API key</label><input id="s-key" type="password" autocomplete="new-password" spellcheck="false" placeholder="Not set"></div>
         <div><label for="s-idle">Scale to zero after idle (minutes)</label><input id="s-idle" type="text" inputmode="numeric" placeholder="30"></div>
-        <div><label for="s-max">Max continuous uptime (minutes)</label><input id="s-max" type="text" inputmode="numeric" placeholder="720"></div>
       </div>
       <div style="margin-top:14px;display:flex;align-items:center;gap:12px">
         <button class="primary" id="s-save" type="submit">Save settings</button>
@@ -167,7 +167,36 @@
 
   if (window.self !== window.top) document.documentElement.classList.add("embedded");
   syncTheme();
-  try { keyInput.value = localStorage.getItem(KEY_NAME) || ""; } catch (e) {}
+  // Reuse the panel's login when it was saved with "Remember password"; otherwise ask once.
+  var fromPanel = panelKey();
+  if (fromPanel) {
+    keyInput.value = fromPanel;
+    $("keybox").classList.add("hidden");
+  } else {
+    try { keyInput.value = localStorage.getItem(KEY_NAME) || ""; } catch (e) {}
+  }
+
+  // panelKey decodes the management key the panel saves in localStorage (same origin). The panel
+  // XORs it with a host-derived secret: "enc::v2::" uses the host, the older "enc::v1::" also the
+  // user agent.
+  function panelKey() {
+    try {
+      var raw = localStorage.getItem("cli-proxy-auth");
+      if (!raw) return "";
+      var v1 = raw.indexOf("enc::v1::") === 0;
+      if (v1 || raw.indexOf("enc::v2::") === 0) {
+        var secret = new TextEncoder().encode("cli-proxy-api-webui::secure-storage|" + location.host + (v1 ? "|" + navigator.userAgent : ""));
+        var bytes = atob(raw.slice(9));
+        var out = new Uint8Array(bytes.length);
+        for (var i = 0; i < bytes.length; i++) out[i] = bytes.charCodeAt(i) ^ secret[i % secret.length];
+        raw = new TextDecoder().decode(out);
+      }
+      var auth = JSON.parse(raw);
+      return (auth && auth.state && typeof auth.state.managementKey === "string") ? auth.state.managementKey : "";
+    } catch (e) {
+      return "";
+    }
+  }
 
   function syncTheme() {
     var root = document.documentElement;
@@ -216,6 +245,7 @@
   }
 
   function authFail() {
+    $("keybox").classList.remove("hidden");
     var has = keyInput.value.trim() !== "";
     showBanner(has
       ? "Management key rejected. Fix it above; nothing is sent until it changes."
@@ -512,7 +542,6 @@
   function loadSettings() {
     return mgmt("GET").then(function (cfg) {
       $("s-idle").value = cfg["idle-minutes"] != null ? cfg["idle-minutes"] : "";
-      $("s-max").value = cfg["max-uptime-minutes"] != null ? cfg["max-uptime-minutes"] : "";
     }).catch(function () {});
   }
   function minutesField(id, label) {
@@ -523,10 +552,9 @@
   }
   $("settings").addEventListener("submit", function (ev) {
     ev.preventDefault();
-    var idle, max;
+    var idle;
     try {
       idle = minutesField("s-idle", "Idle window");
-      max = minutesField("s-max", "Max uptime");
     } catch (e) { setSettingsMsg(e.message, "err"); return; }
     var apiKey = $("s-key").value.trim();
     $("s-save").disabled = true;
@@ -537,7 +565,6 @@
       return mgmt("GET");
     }).then(function (cfg) {
       if (idle == null) delete cfg["idle-minutes"]; else cfg["idle-minutes"] = idle;
-      if (max == null) delete cfg["max-uptime-minutes"]; else cfg["max-uptime-minutes"] = max;
       return mgmt("PUT", cfg);
     }).then(function () {
       setSettingsMsg("Saved.", "ok");

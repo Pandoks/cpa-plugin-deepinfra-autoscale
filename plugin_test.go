@@ -156,7 +156,7 @@ func TestStoreActivity(t *testing.T) {
 
 func TestApplyConfigDefaults(t *testing.T) {
 	cfg := applyConfigYAML(nil)
-	if cfg.IdleMinutes != defaultIdleMinutes || cfg.MaxUptimeMinutes != defaultMaxUptimeMinutes {
+	if cfg.IdleMinutes != defaultIdleMinutes {
 		t.Errorf("defaults not applied: %+v", cfg)
 	}
 	if cfg.StateFile == "" {
@@ -166,9 +166,6 @@ func TestApplyConfigDefaults(t *testing.T) {
 	cfg = applyConfigYAML([]byte("idle-minutes: 5\n"))
 	if cfg.IdleMinutes != 5 {
 		t.Errorf("idle-minutes=%d want 5", cfg.IdleMinutes)
-	}
-	if cfg.MaxUptimeMinutes != defaultMaxUptimeMinutes {
-		t.Errorf("max-uptime default not applied: %d", cfg.MaxUptimeMinutes)
 	}
 }
 
@@ -256,7 +253,6 @@ func TestRewriteModel(t *testing.T) {
 
 func TestShouldStop(t *testing.T) {
 	const idle = int64(1800) // 30 min
-	const maxUp = int64(43200) // 12 h
 	now := int64(1_000_000)
 	cases := []struct {
 		name               string
@@ -267,11 +263,11 @@ func TestShouldStop(t *testing.T) {
 		{"idle past window", now - 3600, now - 4000, true},
 		{"woken never used, past window", 0, now - 3600, true},
 		{"woken never used, within window", 0, now - 10, false},
-		{"over max uptime despite activity", now - 5, now - 99999, true},
+		{"busy for days stays up", now - 5, now - 999999, false},
 		{"no deployment record", 0, 0, false},
 	}
 	for _, c := range cases {
-		if got := shouldStop(c.lastUsed, c.runStart, now, idle, maxUp); got != c.want {
+		if got := shouldStop(c.lastUsed, c.runStart, now, idle); got != c.want {
 			t.Errorf("%s: shouldStop=%v want %v", c.name, got, c.want)
 		}
 	}

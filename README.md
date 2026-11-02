@@ -15,7 +15,8 @@ managed from the CLIProxyAPI dashboard.
   requests are served normally.
 - **Scale to zero when idle**: a background sweep stops a deployment (`POST /deploy/{id}/stop`,
   which halts GPU billing while keeping the downloaded weights for a fast restart) after it has
-  been idle for the configured window, with a hard max-uptime backstop.
+  been idle for the configured window. A model in use stays up; a deployment stuck starting for
+  over 2 hours is deleted.
 - **Add / remove models on the fly** from the dashboard, from a Hugging Face repo + GPU + context.
 
 Because the plugin is in the request path, **activity is tracked automatically** — no client hooks,
@@ -31,8 +32,9 @@ Everything is done in the CLIProxyAPI management panel; no file edits.
    and save.
 2. **Plugin Store**: search `deepinfra`, click **Install**, and confirm. It downloads the `.so` from
    the latest GitHub Release and loads it without a restart.
-3. **PLUGINS → DeepInfra Autoscale** in the sidebar: enter the management key once (the page
-   remembers it), paste your DeepInfra API key under **Settings**, and add models.
+3. **PLUGINS → DeepInfra Autoscale** in the sidebar: paste your DeepInfra API key under
+   **Settings** and add models. The page uses your panel login if you ticked **Remember password**;
+   otherwise it asks for the management key once.
 
 The API key is stored in `deepinfra-autoscale.key` (mode 0600) next to the state file, not in
 `config.yaml`, because CLIProxyAPI shows plugin config fields in plain text.
@@ -51,7 +53,6 @@ plugins:
       enabled: true
       priority: 1
       idle-minutes: 30                 # scale to zero after this many idle minutes (default 30)
-      max-uptime-minutes: 720          # hard backstop (default 720 = 12h)
       state-file: "~/.cli-proxy-api/deepinfra-autoscale-state.json"
 ```
 
@@ -86,7 +87,7 @@ The first request to a scaled-to-zero model starts its deployment and returns `5
 
 ## Cost safety
 
-- Idle scale-to-zero, a max-uptime backstop, orphan re-adoption after a restart, teardown on
+- Idle scale-to-zero, deleting deployments stuck starting, orphan re-adoption after a restart, teardown on
   remove by the recorded deploy id, and a stop-all on clean shutdown all guard against GPUs being
   left billing.
 - **Residual risk:** the idle sweep runs inside CLIProxyAPI, so a hard crash that does not restart
