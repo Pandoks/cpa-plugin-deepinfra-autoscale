@@ -3,8 +3,10 @@ package main
 import (
 	"encoding/json"
 	"path/filepath"
+	"regexp"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestParseGPU(t *testing.T) {
@@ -169,15 +171,28 @@ func TestApplyConfigDefaults(t *testing.T) {
 	}
 }
 
+// DeepInfra reserves a deleted deployment's name, so re-creating "red-snow" under the same name
+// failed with "Model name 'Pandoks/red-snow' is already in use".
+func TestDeploymentNameIsFreshAndSafe(t *testing.T) {
+	first := deploymentName("Red-Snow_5.3", time.Unix(1_800_000_000, 0))
+	second := deploymentName("Red-Snow_5.3", time.Unix(1_800_000_001, 0))
+	if first == second {
+		t.Errorf("names repeat across creates: %q", first)
+	}
+	if !regexp.MustCompile(`^red-snow-5-3-[a-z0-9]+$`).MatchString(first) {
+		t.Errorf("unsafe deployment name %q", first)
+	}
+}
+
 func TestDICreateBody(t *testing.T) {
 	m := &Model{
 		ID: "red-snow", HFRepo: "Owner/Model", Revision: "abc123", GPU: "2xH200-141GB",
 		Context: 1048576, ToolParser: "glm47", ReasoningParser: "glm45", EnableThinking: true,
 	}
 	m.normalize()
-	body := diCreateBody(m)
+	body := diCreateBody(m, "red-snow-abc")
 
-	if body["model_name"] != "red-snow" || body["gpu"] != "H200-141GB" || body["num_gpus"] != 2 {
+	if body["model_name"] != "red-snow-abc" || body["gpu"] != "H200-141GB" || body["num_gpus"] != 2 {
 		t.Errorf("base fields wrong: %+v", body)
 	}
 	hf := body["hf"].(map[string]any)
@@ -205,7 +220,7 @@ func TestDICreateBody(t *testing.T) {
 	// With quantization set and no parsers: extra_args omitted, quantization present.
 	m2 := &Model{ID: "x", HFRepo: "O/M", GPU: "1xA100-80GB", Context: 4096, Quantization: "fp8"}
 	m2.normalize()
-	b2 := diCreateBody(m2)
+	b2 := diCreateBody(m2, "x-abc")
 	if _, ok := b2["extra_args"]; ok {
 		t.Error("extra_args should be omitted with no parsers")
 	}

@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -107,7 +109,16 @@ func (d *diDeployment) matchesModel(m *Model) bool {
 }
 
 // diCreateBody builds the POST /deploy/llm payload for a model.
-func diCreateBody(m *Model) map[string]any {
+var deploymentNameUnsafe = regexp.MustCompile(`[^a-z0-9-]+`)
+
+// deploymentName gives every new deployment a unique DeepInfra name: DeepInfra keeps a deleted
+// deployment's name reserved, so reusing the model id would fail after any remove or replace.
+func deploymentName(id string, now time.Time) string {
+	base := strings.Trim(deploymentNameUnsafe.ReplaceAllString(strings.ToLower(id), "-"), "-")
+	return base + "-" + strconv.FormatInt(now.Unix(), 36)
+}
+
+func diCreateBody(m *Model, name string) map[string]any {
 	gpu, num, _ := parseGPU(m.GPU)
 	hf := map[string]any{"repo": m.HFRepo}
 	if m.Revision != "" {
@@ -131,7 +142,7 @@ func diCreateBody(m *Model) map[string]any {
 		extraArgs = append(extraArgs, "--default-chat-template-kwargs", `{"enable_thinking":true}`)
 	}
 	body := map[string]any{
-		"model_name":     m.ID,
+		"model_name":     name,
 		"gpu":            gpu,
 		"num_gpus":       num,
 		"max_batch_size": m.MaxBatchSize,
@@ -147,7 +158,7 @@ func diCreateBody(m *Model) map[string]any {
 
 // diCreate creates the deployment for a model (starting at one instance).
 func diCreate(callbackID string, m *Model) (*diDeployment, error) {
-	body, _ := json.Marshal(diCreateBody(m))
+	body, _ := json.Marshal(diCreateBody(m, deploymentName(m.ID, time.Now())))
 	resp, err := httpDo(callbackID, "POST", deepInfraAPI+"/deploy/llm", diAuthHeaders(), body)
 	if err != nil {
 		return nil, err
