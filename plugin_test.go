@@ -163,18 +163,12 @@ func TestApplyConfigDefaults(t *testing.T) {
 		t.Error("state file default empty")
 	}
 
-	cfg = applyConfigYAML([]byte("api-key: secret123\nidle-minutes: 5\n"))
-	if cfg.APIKey != "secret123" {
-		t.Errorf("api-key=%q", cfg.APIKey)
-	}
+	cfg = applyConfigYAML([]byte("idle-minutes: 5\n"))
 	if cfg.IdleMinutes != 5 {
 		t.Errorf("idle-minutes=%d want 5", cfg.IdleMinutes)
 	}
 	if cfg.MaxUptimeMinutes != defaultMaxUptimeMinutes {
 		t.Errorf("max-uptime default not applied: %d", cfg.MaxUptimeMinutes)
-	}
-	if apiKey() != "secret123" {
-		t.Errorf("apiKey() cache=%q", apiKey())
 	}
 }
 

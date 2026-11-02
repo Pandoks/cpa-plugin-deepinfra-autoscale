@@ -67,6 +67,7 @@ func handleLifecycle(req []byte) []byte {
 	_ = json.Unmarshal(req, &life)
 	cfg := applyConfigYAML(life.ConfigYAML)
 	modelStore.load(cfg.StateFile)
+	loadAPIKey(cfg.StateFile)
 	startAutoscaler()
 	return envelope(registration(), nil)
 }
@@ -80,10 +81,6 @@ func registration() map[string]any {
 			Version:          version,
 			Author:           "Pandoks",
 			GitHubRepository: "https://github.com/Pandoks/cpa-plugin-deepinfra-autoscale",
-			ConfigFields: []pluginapi.ConfigField{
-				// NOTE: everything else (models, idle window, max uptime) is set on the plugin's page.
-				{Name: "api-key", Type: pluginapi.ConfigFieldTypeString, Description: "DeepInfra API key. Models and scaling are managed on the DeepInfra Autoscale page."},
-			},
 		},
 		"capabilities": capabilities{
 			ModelProvider:         true,

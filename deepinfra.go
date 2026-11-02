@@ -217,6 +217,12 @@ var (
 
 const gpuCacheTTL = 5 * time.Minute
 
+func resetGPUCache() {
+	gpuMu.Lock()
+	gpuCache, gpuCacheTime = nil, time.Time{}
+	gpuMu.Unlock()
+}
+
 // diGPUs returns the DeepInfra GPU catalog with prices, cached for gpuCacheTTL.
 func diGPUs(callbackID string) ([]gpuOption, error) {
 	gpuMu.Lock()

@@ -31,9 +31,11 @@ Everything is done in the CLIProxyAPI management panel; no file edits.
    and save.
 2. **Plugin Store**: search `deepinfra`, click **Install**, and confirm. It downloads the `.so` from
    the latest GitHub Release and loads it without a restart.
-3. **Plugins → DeepInfra Autoscale → Edit config**: paste your DeepInfra API key into `api-key`.
-4. **PLUGINS → DeepInfra Autoscale** in the sidebar: enter the management key once (the page
-   remembers it), then add models and, under **Settings**, adjust the idle window and max uptime.
+3. **PLUGINS → DeepInfra Autoscale** in the sidebar: enter the management key once (the page
+   remembers it), paste your DeepInfra API key under **Settings**, and add models.
+
+The API key is stored in `deepinfra-autoscale.key` (mode 0600) next to the state file, not in
+`config.yaml`, because CLIProxyAPI shows plugin config fields in plain text.
 
 ## Install manually
 
@@ -48,7 +50,6 @@ plugins:
     deepinfra-autoscale:
       enabled: true
       priority: 1
-      api-key: "<deepinfra api key>"   # or in the panel: Plugins → Edit config
       idle-minutes: 30                 # scale to zero after this many idle minutes (default 30)
       max-uptime-minutes: 720          # hard backstop (default 720 = 12h)
       state-file: "~/.cli-proxy-api/deepinfra-autoscale-state.json"
@@ -64,6 +65,7 @@ plugins:
   - `POST .../models` — add `{id, hf_repo, revision?, gpu, context, quantization?, tool_parser?, reasoning_parser?, enable_thinking?}`
   - `DELETE .../models?id=<id>` — remove and tear down
   - `POST .../models/wake?id=<id>` / `.../models/sleep?id=<id>` — manual start / scale-to-zero
+  - `PUT /v0/management/deepinfra-autoscale/api-key` — set the DeepInfra API key `{api_key}`
 
 Adding a model does **not** provision GPUs; it becomes routable immediately and spins up on first
 use (or an explicit Wake). The GPU field is the DeepInfra config string, e.g. `2xH200-141GB`.

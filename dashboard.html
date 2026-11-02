@@ -120,6 +120,7 @@
     <h2>Settings</h2>
     <form id="settings" autocomplete="off">
       <div class="grid">
+        <div><label for="s-key">DeepInfra API key</label><input id="s-key" type="password" autocomplete="new-password" spellcheck="false" placeholder="Not set"></div>
         <div><label for="s-idle">Scale to zero after idle (minutes)</label><input id="s-idle" type="text" inputmode="numeric" placeholder="30"></div>
         <div><label for="s-max">Max continuous uptime (minutes)</label><input id="s-max" type="text" inputmode="numeric" placeholder="720"></div>
       </div>
@@ -157,7 +158,7 @@
 <script>
 (function () {
   "use strict";
-  var API = "/v0/management/deepinfra-autoscale/models";
+  var API = "/v0/management/deepinfra-autoscale";
   var KEY_NAME = "cpa_mgmt_key";
   var $ = function (id) { return document.getElementById(id); };
   var keyInput = $("key");
@@ -419,11 +420,12 @@
   function load() {
     if (loading) return Promise.resolve();
     loading = true;
-    return api("GET", "").then(function (d) {
+    return api("GET", "/models").then(function (d) {
       state.models = Array.isArray(d.models) ? d.models : [];
       state.gpus = Array.isArray(d.gpus) ? d.gpus : [];
       state.idle = d.idle_minutes != null ? d.idle_minutes : null;
-      showBanner(d.deepinfra_error ? "Can't reach DeepInfra, so model status is unknown (check the api-key under Plugins → DeepInfra Autoscale → Edit config): " + d.deepinfra_error : "");
+      $("s-key").placeholder = d.api_key_set ? "Saved (type to replace)" : "Not set";
+      showBanner(!d.api_key_set ? "Add your DeepInfra API key under Settings to get started." : d.deepinfra_error ? "Can't reach DeepInfra, so model status is unknown (check the API key under Settings): " + d.deepinfra_error : "");
       keyInput.classList.remove("attn");
       renderGpuOptions(); renderCost(); renderList();
     }).catch(function (e) {
@@ -435,7 +437,7 @@
     state.busy[id] = true;
     delete state.rowErr[id];
     renderList();
-    var path = method === "DELETE" ? "?id=" + encodeURIComponent(id) : suffix + encodeURIComponent(id);
+    var path = "/models" + (method === "DELETE" ? "?id=" + encodeURIComponent(id) : suffix + encodeURIComponent(id));
     api(method, path).then(function () {
       if (method === "DELETE") return syncModels(); // model set changed -> refresh /v1/models
     }).catch(function (e) {
@@ -476,7 +478,7 @@
     var btn = $("submit");
     btn.disabled = true;
     setFormMsg("Submitting...", "");
-    api("POST", "", body).then(function (d) {
+    api("POST", "/models", body).then(function (d) {
       setFormMsg("Model \"" + ((d.model && d.model.id) || body.id) + "\" added. It appears in Claude Code's /model picker after Claude Code restarts.", "ok");
       $("form").reset();
       return syncModels(); // refresh /v1/models so the model shows in the picker
@@ -526,10 +528,14 @@
       idle = minutesField("s-idle", "Idle window");
       max = minutesField("s-max", "Max uptime");
     } catch (e) { setSettingsMsg(e.message, "err"); return; }
+    var apiKey = $("s-key").value.trim();
     $("s-save").disabled = true;
     setSettingsMsg("Saving...", "");
-    // NOTE: the endpoint replaces the whole plugin config, so merge into the current one.
-    mgmt("GET").then(function (cfg) {
+    (apiKey ? api("PUT", "/api-key", { api_key: apiKey }) : Promise.resolve()).then(function () {
+      $("s-key").value = "";
+      // NOTE: the endpoint replaces the whole plugin config, so merge into the current one.
+      return mgmt("GET");
+    }).then(function (cfg) {
       if (idle == null) delete cfg["idle-minutes"]; else cfg["idle-minutes"] = idle;
       if (max == null) delete cfg["max-uptime-minutes"]; else cfg["max-uptime-minutes"] = max;
       return mgmt("PUT", cfg);

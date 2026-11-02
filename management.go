@@ -25,6 +25,7 @@ func handleManagementRegister() []byte {
 			{Method: "DELETE", Path: "/" + pluginID + "/models", Description: "Remove a managed model"},
 			{Method: "POST", Path: "/" + pluginID + "/models/wake", Description: "Start a model's GPUs"},
 			{Method: "POST", Path: "/" + pluginID + "/models/sleep", Description: "Scale a model to zero"},
+			{Method: "PUT", Path: "/" + pluginID + "/api-key", Description: "Set the DeepInfra API key"},
 		},
 		Resources: []pluginapi.ResourceRoute{
 			{Path: "/dashboard", Menu: "DeepInfra Autoscale", Description: "Model dashboard"},
@@ -65,6 +66,9 @@ func handleManagementHandle(req []byte) []byte {
 
 	case strings.HasSuffix(path, "/models/sleep") && r.Method == "POST":
 		return envelope(actionResponse(cb, r.Query.Get("id"), sleepModel), nil)
+
+	case strings.HasSuffix(path, "/api-key") && r.Method == "PUT":
+		return envelope(setAPIKeyResponse(r.Body), nil)
 
 	case strings.HasSuffix(path, "/models") && r.Method == "GET":
 		return envelope(listModelsResponse(cb), nil)
@@ -147,11 +151,29 @@ func listModelsResponse(cb string) pluginapi.ManagementResponse {
 		"models":       views,
 		"gpus":         gpus,
 		"idle_minutes": cfg.IdleMinutes,
+		"api_key_set":  apiKey() != "",
 	}
 	if listErr != nil {
 		resp["deepinfra_error"] = listErr.Error()
 	}
 	return jsonResponse(http.StatusOK, resp)
+}
+
+func setAPIKeyResponse(body []byte) pluginapi.ManagementResponse {
+	var req struct {
+		APIKey string `json:"api_key"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return jsonResponse(http.StatusBadRequest, map[string]string{"error": "decode request: " + err.Error()})
+	}
+	key := strings.TrimSpace(req.APIKey)
+	if key == "" || strings.ContainsAny(key, " \t\r\n") {
+		return jsonResponse(http.StatusBadRequest, map[string]string{"error": "invalid API key"})
+	}
+	if err := saveAPIKey(key); err != nil {
+		return jsonResponse(http.StatusInternalServerError, map[string]string{"error": "could not save API key: " + err.Error()})
+	}
+	return jsonResponse(http.StatusOK, map[string]bool{"api_key_set": true})
 }
 
 func addModelResponse(body []byte) pluginapi.ManagementResponse {
