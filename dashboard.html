@@ -146,6 +146,7 @@
         <div><label for="f-tool">Tool parser</label><input id="f-tool" type="text" placeholder="glm47"></div>
         <div><label for="f-reason">Reasoning parser</label><input id="f-reason" type="text" placeholder="glm45"></div>
         <div class="check"><input id="f-think" type="checkbox"><label for="f-think">Enable thinking</label></div>
+        <div><label for="f-gen">Default sampling (JSON)</label><input id="f-gen" type="text" placeholder='{"presence_penalty":1.5}'></div>
       </div>
       <div style="margin-top:14px;display:flex;align-items:center;gap:12px">
         <button class="primary" id="submit" type="submit">Add model</button>
@@ -492,6 +493,9 @@
     if (ctx == null) { setFormMsg("Invalid context length. Use e.g. 1048576, 1M or 256k.", "err"); return; }
     var gpu = $("f-gpu").value;
     if (!gpu) { setFormMsg("Select a GPU.", "err"); return; }
+    var gen;
+    try { gen = $("f-gen").value.trim() ? JSON.parse($("f-gen").value) : undefined; }
+    catch (e) { setFormMsg("Default sampling must be a JSON object.", "err"); return; }
     var body = {
       id: $("f-id").value.trim(),
       display_name: $("f-name").value.trim(),
@@ -503,7 +507,8 @@
       quantization: $("f-quant").value.trim(),
       tool_parser: $("f-tool").value.trim(),
       reasoning_parser: $("f-reason").value.trim(),
-      enable_thinking: $("f-think").checked
+      enable_thinking: $("f-think").checked,
+      generation_config: gen
     };
     var btn = $("submit");
     btn.disabled = true;

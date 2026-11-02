@@ -30,6 +30,8 @@ type Model struct {
 	ReasoningParser string `json:"reasoning_parser,omitempty"`
 	EnableThinking  bool   `json:"enable_thinking,omitempty"`
 	MaxBatchSize    int    `json:"max_batch_size,omitempty"`
+	// GenerationConfig is the deployment's default sampling, for clients like Claude Code that send none.
+	GenerationConfig map[string]any `json:"generation_config,omitempty"`
 
 	// Deployment linkage, learned at create/reconcile time and persisted.
 	DeployID      string `json:"deploy_id,omitempty"`
@@ -57,7 +59,22 @@ func (m *Model) validate() error {
 	if utf8.RuneCountInString(m.DisplayName) > 64 {
 		return fmt.Errorf("display name is longer than 64 characters")
 	}
+	for key, value := range m.GenerationConfig {
+		if !generationConfigKeys[key] {
+			return fmt.Errorf("unsupported generation_config key %q", key)
+		}
+		if _, ok := value.(float64); !ok {
+			return fmt.Errorf("generation_config %q must be a number", key)
+		}
+	}
 	return nil
+}
+
+// generationConfigKeys are the sampling keys vLLM reads from --override-generation-config; it
+// silently drops any other key.
+var generationConfigKeys = map[string]bool{
+	"repetition_penalty": true, "presence_penalty": true, "frequency_penalty": true, "temperature": true,
+	"top_k": true, "top_p": true, "min_p": true, "max_new_tokens": true,
 }
 
 // normalize fills derived/default fields.

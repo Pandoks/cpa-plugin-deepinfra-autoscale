@@ -141,6 +141,10 @@ func diCreateBody(m *Model, name string) map[string]any {
 	if m.EnableThinking {
 		extraArgs = append(extraArgs, "--default-chat-template-kwargs", `{"enable_thinking":true}`)
 	}
+	if len(m.GenerationConfig) > 0 {
+		generationConfig, _ := json.Marshal(m.GenerationConfig)
+		extraArgs = append(extraArgs, "--override-generation-config", string(generationConfig))
+	}
 	body := map[string]any{
 		"model_name":     name,
 		"gpu":            gpu,

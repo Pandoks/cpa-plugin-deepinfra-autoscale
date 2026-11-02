@@ -69,6 +69,8 @@ func TestModelValidate(t *testing.T) {
 		{ID: "ok", HFRepo: "a/b/c", GPU: "2xH200-141GB", Context: 1},
 		{ID: "ok", HFRepo: "Owner/Model", GPU: "H200", Context: 1},
 		{ID: "ok", HFRepo: "Owner/Model", GPU: "2xH200-141GB", Context: 0},
+		{ID: "ok", HFRepo: "Owner/Model", GPU: "2xH200-141GB", Context: 1, GenerationConfig: map[string]any{"presence": 1.5}},
+		{ID: "ok", HFRepo: "Owner/Model", GPU: "2xH200-141GB", Context: 1, GenerationConfig: map[string]any{"top_p": "0.9"}},
 	}
 	for i, m := range bad {
 		if err := m.validate(); err == nil {
@@ -188,6 +190,7 @@ func TestDICreateBody(t *testing.T) {
 	m := &Model{
 		ID: "red-snow", HFRepo: "Owner/Model", Revision: "abc123", GPU: "2xH200-141GB",
 		Context: 1048576, ToolParser: "glm47", ReasoningParser: "glm45", EnableThinking: true,
+		GenerationConfig: map[string]any{"presence_penalty": 1.5},
 	}
 	m.normalize()
 	body := diCreateBody(m, "red-snow-abc")
@@ -211,7 +214,8 @@ func TestDICreateBody(t *testing.T) {
 	for _, a := range ea {
 		joined += a + " "
 	}
-	for _, want := range []string{"--enable-auto-tool-choice", "glm47", "--reasoning-parser", "glm45", "enable_thinking"} {
+	for _, want := range []string{"--enable-auto-tool-choice", "glm47", "--reasoning-parser", "glm45", "enable_thinking",
+		`--override-generation-config {"presence_penalty":1.5}`} {
 		if !contains(joined, want) {
 			t.Errorf("extra_args missing %q: %v", want, ea)
 		}

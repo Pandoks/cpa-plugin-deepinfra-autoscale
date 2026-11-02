@@ -85,22 +85,23 @@ func handleManagementHandle(req []byte) []byte {
 // --- handlers ---
 
 type modelView struct {
-	ID              string  `json:"id"`
-	DisplayName     string  `json:"display_name,omitempty"`
-	HFRepo          string  `json:"hf_repo"`
-	Revision        string  `json:"revision,omitempty"`
-	GPU             string  `json:"gpu"`
-	NumGPUs         int     `json:"num_gpus"`
-	Context         int64   `json:"context"`
-	Quantization    string  `json:"quantization,omitempty"`
-	ToolParser      string  `json:"tool_parser,omitempty"`
-	ReasoningParser string  `json:"reasoning_parser,omitempty"`
-	EnableThinking  bool    `json:"enable_thinking"`
-	Status          string  `json:"status"`
-	MinInstances    int     `json:"min_instances"`
-	DeployID        string  `json:"deploy_id,omitempty"`
-	LastUsedUnix    int64   `json:"last_used_unix"`
-	USDPerHour      float64 `json:"usd_per_hour"`
+	ID               string         `json:"id"`
+	DisplayName      string         `json:"display_name,omitempty"`
+	HFRepo           string         `json:"hf_repo"`
+	Revision         string         `json:"revision,omitempty"`
+	GPU              string         `json:"gpu"`
+	NumGPUs          int            `json:"num_gpus"`
+	Context          int64          `json:"context"`
+	Quantization     string         `json:"quantization,omitempty"`
+	ToolParser       string         `json:"tool_parser,omitempty"`
+	ReasoningParser  string         `json:"reasoning_parser,omitempty"`
+	EnableThinking   bool           `json:"enable_thinking"`
+	GenerationConfig map[string]any `json:"generation_config,omitempty"`
+	Status           string         `json:"status"`
+	MinInstances     int            `json:"min_instances"`
+	DeployID         string         `json:"deploy_id,omitempty"`
+	LastUsedUnix     int64          `json:"last_used_unix"`
+	USDPerHour       float64        `json:"usd_per_hour"`
 }
 
 func listModelsResponse(cb string) pluginapi.ManagementResponse {
@@ -129,7 +130,7 @@ func listModelsResponse(cb string) pluginapi.ManagementResponse {
 		v := modelView{
 			ID: m.ID, DisplayName: m.DisplayName, HFRepo: m.HFRepo, Revision: m.Revision, GPU: m.GPU, NumGPUs: m.NumGPUs,
 			Context: m.Context, Quantization: m.Quantization, ToolParser: m.ToolParser,
-			ReasoningParser: m.ReasoningParser, EnableThinking: m.EnableThinking,
+			ReasoningParser: m.ReasoningParser, EnableThinking: m.EnableThinking, GenerationConfig: m.GenerationConfig,
 			DeployID: m.DeployID, LastUsedUnix: lastUsed, USDPerHour: gpuPrice(m.GPU),
 			Status: "scaled-to-zero", MinInstances: 0,
 		}
