@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
@@ -78,7 +79,7 @@ func registration() map[string]any {
 		"schema_version": pluginabi.SchemaVersion,
 		"metadata": pluginapi.Metadata{
 			Name:             "deepinfra-autoscale",
-			Version:          version,
+			Version:          strings.TrimPrefix(version, "v"), // the panel prefixes its own "v"
 			Author:           "Pandoks",
 			GitHubRepository: "https://github.com/Pandoks/cpa-plugin-deepinfra-autoscale",
 		},
