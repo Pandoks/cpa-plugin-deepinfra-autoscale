@@ -145,6 +145,10 @@ func diCreateBody(m *Model, name string) map[string]any {
 		generationConfig, _ := json.Marshal(m.GenerationConfig)
 		extraArgs = append(extraArgs, "--override-generation-config", string(generationConfig))
 	}
+	if len(m.SpeculativeConfig) > 0 {
+		speculativeConfig, _ := json.Marshal(m.SpeculativeConfig)
+		extraArgs = append(extraArgs, "--speculative-config", string(speculativeConfig))
+	}
 	body := map[string]any{
 		"model_name":     name,
 		"gpu":            gpu,

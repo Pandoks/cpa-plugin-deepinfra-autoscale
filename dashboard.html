@@ -147,6 +147,7 @@
         <div><label for="f-reason">Reasoning parser</label><input id="f-reason" type="text" placeholder="glm45"></div>
         <div class="check"><input id="f-think" type="checkbox"><label for="f-think">Enable thinking</label></div>
         <div><label for="f-gen">Default sampling (JSON)</label><input id="f-gen" type="text" placeholder='{"presence_penalty":1.5}'></div>
+        <div><label for="f-spec">Speculative decoding (JSON)</label><input id="f-spec" type="text" placeholder='{"method":"dflash","model":"Owner/Draft","num_speculative_tokens":8}'></div>
       </div>
       <div style="margin-top:14px;display:flex;align-items:center;gap:12px">
         <button class="primary" id="submit" type="submit">Add model</button>
@@ -496,6 +497,9 @@
     var gen;
     try { gen = $("f-gen").value.trim() ? JSON.parse($("f-gen").value) : undefined; }
     catch (e) { setFormMsg("Default sampling must be a JSON object.", "err"); return; }
+    var spec;
+    try { spec = $("f-spec").value.trim() ? JSON.parse($("f-spec").value) : undefined; }
+    catch (e) { setFormMsg("Speculative decoding must be a JSON object.", "err"); return; }
     var body = {
       id: $("f-id").value.trim(),
       display_name: $("f-name").value.trim(),
@@ -508,7 +512,8 @@
       tool_parser: $("f-tool").value.trim(),
       reasoning_parser: $("f-reason").value.trim(),
       enable_thinking: $("f-think").checked,
-      generation_config: gen
+      generation_config: gen,
+      speculative_config: spec
     };
     var btn = $("submit");
     btn.disabled = true;

@@ -32,6 +32,8 @@ type Model struct {
 	MaxBatchSize    int    `json:"max_batch_size,omitempty"`
 	// GenerationConfig is the deployment's default sampling, for clients like Claude Code that send none.
 	GenerationConfig map[string]any `json:"generation_config,omitempty"`
+	// SpeculativeConfig is vLLM's --speculative-config, e.g. a draft model that speeds up decoding.
+	SpeculativeConfig map[string]any `json:"speculative_config,omitempty"`
 
 	// Deployment linkage, learned at create/reconcile time and persisted.
 	DeployID      string `json:"deploy_id,omitempty"`
@@ -65,6 +67,11 @@ func (m *Model) validate() error {
 		}
 		if _, ok := value.(float64); !ok {
 			return fmt.Errorf("generation_config %q must be a number", key)
+		}
+	}
+	if m.SpeculativeConfig != nil {
+		if method, _ := m.SpeculativeConfig["method"].(string); method == "" {
+			return fmt.Errorf("speculative_config needs a method, e.g. dflash")
 		}
 	}
 	return nil

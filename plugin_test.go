@@ -37,11 +37,11 @@ func TestParseGPU(t *testing.T) {
 
 func TestNormalizeModelID(t *testing.T) {
 	cases := map[string]string{
-		"red-snow":      "red-snow",
-		"red-snow[1m]":  "red-snow",
+		"red-snow":       "red-snow",
+		"red-snow[1m]":   "red-snow",
 		"red-snow[200k]": "red-snow",
-		"a[1m][x]":      "a[1m]",
-		"":              "",
+		"a[1m][x]":       "a[1m]",
+		"":               "",
 	}
 	for in, want := range cases {
 		if got := normalizeModelID(in); got != want {
@@ -71,6 +71,7 @@ func TestModelValidate(t *testing.T) {
 		{ID: "ok", HFRepo: "Owner/Model", GPU: "2xH200-141GB", Context: 0},
 		{ID: "ok", HFRepo: "Owner/Model", GPU: "2xH200-141GB", Context: 1, GenerationConfig: map[string]any{"presence": 1.5}},
 		{ID: "ok", HFRepo: "Owner/Model", GPU: "2xH200-141GB", Context: 1, GenerationConfig: map[string]any{"top_p": "0.9"}},
+		{ID: "ok", HFRepo: "Owner/Model", GPU: "2xH200-141GB", Context: 1, SpeculativeConfig: map[string]any{"model": "Owner/Draft"}},
 	}
 	for i, m := range bad {
 		if err := m.validate(); err == nil {
@@ -190,7 +191,8 @@ func TestDICreateBody(t *testing.T) {
 	m := &Model{
 		ID: "red-snow", HFRepo: "Owner/Model", Revision: "abc123", GPU: "2xH200-141GB",
 		Context: 1048576, ToolParser: "glm47", ReasoningParser: "glm45", EnableThinking: true,
-		GenerationConfig: map[string]any{"presence_penalty": 1.5},
+		GenerationConfig:  map[string]any{"presence_penalty": 1.5},
+		SpeculativeConfig: map[string]any{"method": "dflash", "model": "Owner/Draft", "num_speculative_tokens": 8},
 	}
 	m.normalize()
 	body := diCreateBody(m, "red-snow-abc")
@@ -215,7 +217,8 @@ func TestDICreateBody(t *testing.T) {
 		joined += a + " "
 	}
 	for _, want := range []string{"--enable-auto-tool-choice", "glm47", "--reasoning-parser", "glm45", "enable_thinking",
-		`--override-generation-config {"presence_penalty":1.5}`} {
+		`--override-generation-config {"presence_penalty":1.5}`,
+		`--speculative-config {"method":"dflash","model":"Owner/Draft","num_speculative_tokens":8}`} {
 		if !contains(joined, want) {
 			t.Errorf("extra_args missing %q: %v", want, ea)
 		}

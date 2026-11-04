@@ -63,7 +63,7 @@ plugins:
 - UI (no auth): `GET /v0/resource/plugins/deepinfra-autoscale/dashboard`
 - JSON API (management-authenticated, `Authorization: Bearer <management secret-key>`):
   - `GET /v0/management/deepinfra-autoscale/models` — list models, GPU catalog + prices, idle window
-  - `POST .../models` — add `{id, hf_repo, revision?, gpu, context, quantization?, tool_parser?, reasoning_parser?, enable_thinking?, generation_config?}`
+  - `POST .../models` — add `{id, hf_repo, revision?, gpu, context, quantization?, tool_parser?, reasoning_parser?, enable_thinking?, generation_config?, speculative_config?}`
   - `DELETE .../models?id=<id>` — remove and tear down
   - `POST .../models/wake?id=<id>` / `.../models/sleep?id=<id>` — manual start / scale-to-zero
   - `PUT /v0/management/deepinfra-autoscale/api-key` — set the DeepInfra API key `{api_key}`
@@ -71,6 +71,10 @@ plugins:
 `generation_config` sets the deployment's default sampling through vLLM's `--override-generation-config`,
 e.g. `{"presence_penalty":1.5}`. Claude Code sends no sampling fields, so this is how you tune it for
 Claude Code. It applies when a deployment is created, so change it by removing and re-adding the model.
+
+`speculative_config` is passed to vLLM's `--speculative-config`, also at deployment creation. A draft
+model runs on the same GPUs and vLLM downloads it from Hugging Face itself, e.g.
+`{"method":"dflash","model":"Blackfrost-AI/RED-SNOW-5.3-FLASH-DFlash2-STAGE2","num_speculative_tokens":8}`.
 
 Adding a model does **not** provision GPUs; it becomes routable immediately and spins up on first
 use (or an explicit Wake). The GPU field is the DeepInfra config string, e.g. `2xH200-141GB`.
