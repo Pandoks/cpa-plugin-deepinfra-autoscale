@@ -252,7 +252,7 @@ func TestDashboardStatus(t *testing.T) {
 }
 
 func TestRewriteModel(t *testing.T) {
-	out := rewriteModel([]byte(`{"model":"red-snow[1m]","messages":[]}`), "Pandoks/red-snow")
+	out := rewriteModel([]byte(`{"model":"red-snow[1m]","messages":[]}`), "Pandoks/red-snow", false, true)
 	var parsed map[string]any
 	if err := json.Unmarshal(out, &parsed); err != nil {
 		t.Fatalf("output not json: %v", err)
@@ -265,8 +265,22 @@ func TestRewriteModel(t *testing.T) {
 	}
 	// Invalid JSON is returned unchanged.
 	bad := []byte(`not json`)
-	if string(rewriteModel(bad, "x")) != "not json" {
+	if string(rewriteModel(bad, "x", false, true)) != "not json" {
 		t.Error("invalid json should be unchanged")
+	}
+	if _, ok := parsed["thinking"]; ok {
+		t.Error("thinking set for a model with thinking on")
+	}
+
+	// A model with thinking off turns it off in each request, in the client's format.
+	json.Unmarshal(rewriteModel([]byte(`{"messages":[]}`), "x", true, true), &parsed)
+	if thinking, _ := parsed["thinking"].(map[string]any); thinking["type"] != "disabled" {
+		t.Errorf("anthropic thinking=%v want disabled", parsed["thinking"])
+	}
+	parsed = nil
+	json.Unmarshal(rewriteModel([]byte(`{"messages":[],"chat_template_kwargs":{"a":1}}`), "x", true, false), &parsed)
+	if kwargs, _ := parsed["chat_template_kwargs"].(map[string]any); kwargs["enable_thinking"] != false || kwargs["a"] != float64(1) {
+		t.Errorf("openai chat_template_kwargs=%v", parsed["chat_template_kwargs"])
 	}
 }
 

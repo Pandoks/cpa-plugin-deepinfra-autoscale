@@ -40,8 +40,9 @@ func upstreamFor(sourceFormat string) (url string, extraHeaders map[string][]str
 
 // rewriteModel sets the upstream "model" field in a chat payload to the DeepInfra deployment name,
 // preserving all other fields and their numeric precision (UseNumber avoids turning large integer
-// fields like seed into lossy float64).
-func rewriteModel(payload []byte, deepInfraName string) []byte {
+// fields like seed into lossy float64). For a model with thinking off it also turns thinking off in
+// the request, since DeepInfra takes thinking from each request rather than the deployment default.
+func rewriteModel(payload []byte, deepInfraName string, thinkingOff, anthropic bool) []byte {
 	dec := json.NewDecoder(bytes.NewReader(payload))
 	dec.UseNumber()
 	var body map[string]any
@@ -49,6 +50,16 @@ func rewriteModel(payload []byte, deepInfraName string) []byte {
 		return payload // not a JSON object; leave as-is, upstream will report the error
 	}
 	body["model"] = deepInfraName
+	if thinkingOff && anthropic {
+		body["thinking"] = map[string]any{"type": "disabled"}
+	} else if thinkingOff {
+		kwargs, _ := body["chat_template_kwargs"].(map[string]any)
+		if kwargs == nil {
+			kwargs = map[string]any{}
+		}
+		kwargs["enable_thinking"] = false
+		body["chat_template_kwargs"] = kwargs
+	}
 	out, err := json.Marshal(body)
 	if err != nil {
 		return payload
@@ -80,9 +91,12 @@ func prepareUpstream(r *executorRequest) (url string, headers map[string][]strin
 	}
 
 	// Re-read to get the deployment name learned during ensureRunning.
-	name := id
-	if m, ok := modelStore.get(id); ok && m.DeepInfraName != "" {
-		name = m.DeepInfraName
+	name, thinkingOff := id, false
+	if m, ok := modelStore.get(id); ok {
+		if m.DeepInfraName != "" {
+			name = m.DeepInfraName
+		}
+		thinkingOff = !m.EnableThinking
 	}
 
 	url, extra := upstreamFor(r.SourceFormat)
@@ -93,7 +107,7 @@ func prepareUpstream(r *executorRequest) (url string, headers map[string][]strin
 	for k, v := range extra {
 		headers[k] = v
 	}
-	body = rewriteModel(r.Payload, name)
+	body = rewriteModel(r.Payload, name, thinkingOff, r.SourceFormat == "claude" || r.SourceFormat == "anthropic")
 	return url, headers, body, nil
 }
 
