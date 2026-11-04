@@ -98,6 +98,7 @@ type modelView struct {
 	EnableThinking    bool           `json:"enable_thinking"`
 	GenerationConfig  map[string]any `json:"generation_config,omitempty"`
 	SpeculativeConfig map[string]any `json:"speculative_config,omitempty"`
+	LoopGuard         string         `json:"loop_guard,omitempty"`
 	Status            string         `json:"status"`
 	MinInstances      int            `json:"min_instances"`
 	DeployID          string         `json:"deploy_id,omitempty"`
@@ -132,7 +133,7 @@ func listModelsResponse(cb string) pluginapi.ManagementResponse {
 			ID: m.ID, DisplayName: m.DisplayName, HFRepo: m.HFRepo, Revision: m.Revision, GPU: m.GPU, NumGPUs: m.NumGPUs,
 			Context: m.Context, Quantization: m.Quantization, ToolParser: m.ToolParser,
 			ReasoningParser: m.ReasoningParser, EnableThinking: m.EnableThinking, GenerationConfig: m.GenerationConfig,
-			SpeculativeConfig: m.SpeculativeConfig, DeployID: m.DeployID, LastUsedUnix: lastUsed, USDPerHour: gpuPrice(m.GPU),
+			SpeculativeConfig: m.SpeculativeConfig, LoopGuard: m.LoopGuard, DeployID: m.DeployID, LastUsedUnix: lastUsed, USDPerHour: gpuPrice(m.GPU),
 			Status: "scaled-to-zero", MinInstances: 0,
 		}
 		if listErr != nil {

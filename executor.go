@@ -67,25 +67,29 @@ func rewriteModel(payload []byte, deepInfraName string, thinkingOff, anthropic b
 	return out
 }
 
+func isAnthropic(r *executorRequest) bool {
+	return r.SourceFormat == "claude" || r.SourceFormat == "anthropic"
+}
+
 // prepareUpstream resolves the model, records activity, ensures it is running, and builds the
-// outbound request. A non-nil error-envelope return means "stop; return this to the client"
-// (e.g. warming up or unknown model).
-func prepareUpstream(r *executorRequest) (url string, headers map[string][]string, body []byte, errResp []byte) {
+// outbound request, returning the model's loop guard setting with it. A non-nil error-envelope
+// return means "stop; return this to the client" (e.g. warming up or unknown model).
+func prepareUpstream(r *executorRequest) (url string, headers map[string][]string, body []byte, loopGuard string, errResp []byte) {
 	id := normalizeModelID(r.Model)
 	if id == "" {
 		id = normalizeModelID(r.Alias())
 	}
 	if id == "" || !modelStore.has(id) {
-		return "", nil, nil, errorEnvelopeStatus("unknown_model", fmt.Sprintf("model %q is not managed by deepinfra-autoscale", id), http.StatusNotFound)
+		return "", nil, nil, "", errorEnvelopeStatus("unknown_model", fmt.Sprintf("model %q is not managed by deepinfra-autoscale", id), http.StatusNotFound)
 	}
 	modelStore.markUsed(id, time.Now().Unix())
 
 	status, err := ensureRunning(r.HostCallbackID, id)
 	if err != nil {
-		return "", nil, nil, errorEnvelopeStatus("deepinfra_error", err.Error(), http.StatusBadGateway)
+		return "", nil, nil, "", errorEnvelopeStatus("deepinfra_error", err.Error(), http.StatusBadGateway)
 	}
 	if status != "running" {
-		return "", nil, nil, errorEnvelopeStatus("warming_up",
+		return "", nil, nil, "", errorEnvelopeStatus("warming_up",
 			fmt.Sprintf("model %q is warming up (status %s; cold start ~12 min). Retry shortly.", id, status),
 			http.StatusServiceUnavailable)
 	}
@@ -97,6 +101,7 @@ func prepareUpstream(r *executorRequest) (url string, headers map[string][]strin
 			name = m.DeepInfraName
 		}
 		thinkingOff = !m.EnableThinking
+		loopGuard = m.LoopGuard
 	}
 
 	url, extra := upstreamFor(r.SourceFormat)
@@ -107,8 +112,8 @@ func prepareUpstream(r *executorRequest) (url string, headers map[string][]strin
 	for k, v := range extra {
 		headers[k] = v
 	}
-	body = rewriteModel(r.Payload, name, thinkingOff, r.SourceFormat == "claude" || r.SourceFormat == "anthropic")
-	return url, headers, body, nil
+	body = rewriteModel(r.Payload, name, thinkingOff, isAnthropic(r))
+	return url, headers, body, loopGuard, nil
 }
 
 func handleExecutorExecute(req []byte) []byte {
@@ -116,7 +121,7 @@ func handleExecutorExecute(req []byte) []byte {
 	if err := json.Unmarshal(req, &r); err != nil {
 		return errorEnvelope("bad_request", "decode executor request: "+err.Error())
 	}
-	url, headers, body, errResp := prepareUpstream(&r)
+	url, headers, body, _, errResp := prepareUpstream(&r)
 	if errResp != nil {
 		return errResp
 	}
@@ -135,7 +140,7 @@ func handleExecutorExecuteStream(req []byte) []byte {
 	if err := json.Unmarshal(req, &r); err != nil {
 		return errorEnvelope("bad_request", "decode executor request: "+err.Error())
 	}
-	url, headers, body, errResp := prepareUpstream(&r)
+	url, headers, body, loopGuard, errResp := prepareUpstream(&r)
 	if errResp != nil {
 		return errResp
 	}
@@ -151,7 +156,14 @@ func handleExecutorExecuteStream(req []byte) []byte {
 
 	downstream := r.StreamID
 	hostStream := stream.StreamID
-	go pumpStream(hostStream, downstream)
+	if loopGuard == loopGuardOn || loopGuard == loopGuardObserve {
+		var decoded map[string]any
+		_ = json.Unmarshal(body, &decoded)
+		g := &guard{id: guardSeq.Add(1), r: &r, url: url, headers: headers, body: decoded, downstream: downstream, mode: loopGuard, anthropic: isAnthropic(&r)}
+		go g.pump(hostStream, 0)
+	} else {
+		go pumpStream(hostStream, downstream)
+	}
 
 	return envelope(execStreamResponse{Headers: stream.Headers}, nil)
 }

@@ -147,6 +147,7 @@
         <div><label for="f-reason">Reasoning parser</label><input id="f-reason" type="text" placeholder="glm45"></div>
         <div class="check"><input id="f-think" type="checkbox"><label for="f-think">Enable thinking</label></div>
         <div><label for="f-gen">Default sampling (JSON)</label><input id="f-gen" type="text" placeholder='{"presence_penalty":1.5}'></div>
+        <div><label for="f-guard">Loop guard</label><select id="f-guard"><option value="off">Off</option><option value="on">On: cut loops and ask the model to finish</option><option value="observe">Observe: log loops only</option></select></div>
         <div><label for="f-spec">Speculative decoding (JSON)</label><input id="f-spec" type="text" placeholder='{"method":"dflash","model":"Owner/Draft","num_speculative_tokens":8}'></div>
       </div>
       <div style="margin-top:14px;display:flex;align-items:center;gap:12px">
@@ -512,6 +513,7 @@
       tool_parser: $("f-tool").value.trim(),
       reasoning_parser: $("f-reason").value.trim(),
       enable_thinking: $("f-think").checked,
+      loop_guard: $("f-guard").value,
       generation_config: gen,
       speculative_config: spec
     };

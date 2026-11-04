@@ -34,6 +34,8 @@ type Model struct {
 	GenerationConfig map[string]any `json:"generation_config,omitempty"`
 	// SpeculativeConfig is vLLM's --speculative-config, e.g. a draft model that speeds up decoding.
 	SpeculativeConfig map[string]any `json:"speculative_config,omitempty"`
+	// LoopGuard is "on", "observe" or "off" (the default); see loopguard.go.
+	LoopGuard string `json:"loop_guard,omitempty"`
 
 	// Deployment linkage, learned at create/reconcile time and persisted.
 	DeployID      string `json:"deploy_id,omitempty"`
@@ -73,6 +75,11 @@ func (m *Model) validate() error {
 		if method, _ := m.SpeculativeConfig["method"].(string); method == "" {
 			return fmt.Errorf("speculative_config needs a method, e.g. dflash")
 		}
+	}
+	switch m.LoopGuard {
+	case "", loopGuardOff, loopGuardObserve, loopGuardOn:
+	default:
+		return fmt.Errorf("loop_guard must be on, observe or off, not %q", m.LoopGuard)
 	}
 	return nil
 }

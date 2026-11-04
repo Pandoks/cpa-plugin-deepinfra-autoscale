@@ -63,7 +63,7 @@ plugins:
 - UI (no auth): `GET /v0/resource/plugins/deepinfra-autoscale/dashboard`
 - JSON API (management-authenticated, `Authorization: Bearer <management secret-key>`):
   - `GET /v0/management/deepinfra-autoscale/models` — list models, GPU catalog + prices, idle window
-  - `POST .../models` — add `{id, hf_repo, revision?, gpu, context, quantization?, tool_parser?, reasoning_parser?, enable_thinking?, generation_config?, speculative_config?}`
+  - `POST .../models` — add `{id, hf_repo, revision?, gpu, context, quantization?, tool_parser?, reasoning_parser?, enable_thinking?, generation_config?, speculative_config?, loop_guard?}`
   - `DELETE .../models?id=<id>` — remove and tear down
   - `POST .../models/wake?id=<id>` / `.../models/sleep?id=<id>` — manual start / scale-to-zero
   - `PUT /v0/management/deepinfra-autoscale/api-key` — set the DeepInfra API key `{api_key}`
@@ -75,6 +75,12 @@ Claude Code. It applies when a deployment is created, so change it by removing a
 `speculative_config` is passed to vLLM's `--speculative-config`, also at deployment creation. A draft
 model runs on the same GPUs and vLLM downloads it from Hugging Face itself, e.g.
 `{"method":"dflash","model":"Blackfrost-AI/RED-SNOW-5.3-FLASH-DFlash2-STAGE2","num_speculative_tokens":8}`.
+
+`loop_guard` watches a model's streamed responses for degeneration: the same 128 characters recurring
+6 times, or, in thinking, 1500 bytes with no sentence break or newline (the endless word lists a
+presence penalty produces). With `on`, a loop in the answer ends the response there; a loop in thinking
+is cut, and the request is sent again with the output so far and a note asking the model to finish, at
+most twice and never after a tool call. `observe` only logs loops; `off` is the default.
 
 Adding a model does **not** provision GPUs; it becomes routable immediately and spins up on first
 use (or an explicit Wake). The GPU field is the DeepInfra config string, e.g. `2xH200-141GB`.

@@ -51,7 +51,7 @@ func TestNormalizeModelID(t *testing.T) {
 }
 
 func TestModelValidate(t *testing.T) {
-	good := &Model{ID: "red-snow", HFRepo: "Owner/Model", GPU: "2xH200-141GB", Context: 1048576}
+	good := &Model{ID: "red-snow", HFRepo: "Owner/Model", GPU: "2xH200-141GB", Context: 1048576, LoopGuard: loopGuardOn}
 	good.normalize()
 	if err := good.validate(); err != nil {
 		t.Fatalf("good model rejected: %v", err)
@@ -72,6 +72,7 @@ func TestModelValidate(t *testing.T) {
 		{ID: "ok", HFRepo: "Owner/Model", GPU: "2xH200-141GB", Context: 1, GenerationConfig: map[string]any{"presence": 1.5}},
 		{ID: "ok", HFRepo: "Owner/Model", GPU: "2xH200-141GB", Context: 1, GenerationConfig: map[string]any{"top_p": "0.9"}},
 		{ID: "ok", HFRepo: "Owner/Model", GPU: "2xH200-141GB", Context: 1, SpeculativeConfig: map[string]any{"model": "Owner/Draft"}},
+		{ID: "ok", HFRepo: "Owner/Model", GPU: "2xH200-141GB", Context: 1, LoopGuard: "auto"},
 	}
 	for i, m := range bad {
 		if err := m.validate(); err == nil {
