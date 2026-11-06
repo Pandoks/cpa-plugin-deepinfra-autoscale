@@ -82,7 +82,12 @@
   .empty { padding: 28px; text-align: center; color: var(--muted); }
   .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 12px; flex-wrap: wrap; }
   .toolbar h2 { margin: 0; }
-  .row-err { color: var(--red); font-size: 12px; margin-top: 2px; }
+  .row-err { color: var(--red); font-size: 12px; margin-top: 2px; max-width: 320px; }
+  .gpus { grid-column: 1 / -1; }
+  .gpu-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 4px 14px; }
+  .gpu-list label { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--text); font-size: 13px; cursor: pointer; }
+  .gpu-list input { width: auto; margin: 0; }
+  input[readonly] { color: var(--muted); }
 </style>
 </head>
 <body>
@@ -132,7 +137,7 @@
   </section>
 
   <section>
-    <h2>Add model</h2>
+    <h2 id="form-title">Add model</h2>
     <p class="note">Creating a model provisions GPUs on DeepInfra and bills while running; models scale to zero after the idle window.</p>
     <form id="form" autocomplete="off">
       <div class="grid">
@@ -140,7 +145,6 @@
         <div><label for="f-name">Name in Claude Code</label><input id="f-name" type="text" maxlength="64" placeholder="RED-SNOW 5.3 Flash"></div>
         <div><label for="f-repo">HF repo *</label><input id="f-repo" type="text" required placeholder="Blackfrost-AI/RED-SNOW-5.3-FLASH-NVFP4"></div>
         <div><label for="f-rev">Revision (commit sha)</label><input id="f-rev" type="text" placeholder="optional"></div>
-        <div><label for="f-gpu">GPU *</label><select id="f-gpu" required><option value="">Loading...</option></select></div>
         <div><label for="f-ctx">Context length *</label><input id="f-ctx" type="text" required placeholder="1M, 256k or 1048576"></div>
         <div><label for="f-quant">Quantization</label><input id="f-quant" type="text" placeholder="fp8"></div>
         <div><label for="f-tool">Tool parser</label><input id="f-tool" type="text" placeholder="glm47"></div>
@@ -149,9 +153,15 @@
         <div><label for="f-gen">Default sampling (JSON)</label><input id="f-gen" type="text" placeholder='{"presence_penalty":1.5}'></div>
         <div><label for="f-guard">Loop guard</label><select id="f-guard"><option value="off">Off</option><option value="on">On: cut loops and ask the model to finish</option><option value="observe">Observe: log loops only</option></select></div>
         <div><label for="f-spec">Speculative decoding (JSON)</label><input id="f-spec" type="text" placeholder='{"method":"dflash","model":"Owner/Draft","num_speculative_tokens":8}'></div>
+        <div class="gpus">
+          <label>GPUs * (it runs on the cheapest one DeepInfra has free, and moves down the list when one fails)</label>
+          <div class="gpu-list" id="f-gpus"><span class="muted">Loading...</span></div>
+        </div>
       </div>
+      <p class="note" id="edit-note" style="display:none;margin:14px 0 0">Changing anything but the name, loop guard or GPU list deletes the model's deployment; the next request provisions a new one (~12 min cold start).</p>
       <div style="margin-top:14px;display:flex;align-items:center;gap:12px">
         <button class="primary" id="submit" type="submit">Add model</button>
+        <button id="cancel" type="button" style="display:none">Cancel</button>
         <span id="formmsg" class="msg" style="margin:0"></span>
       </div>
     </form>
@@ -165,7 +175,7 @@
   var KEY_NAME = "cpa_mgmt_key";
   var $ = function (id) { return document.getElementById(id); };
   var keyInput = $("key");
-  var state = { models: [], gpus: [], idle: null, busy: {}, rowErr: {} };
+  var state = { models: [], gpus: [], idle: null, busy: {}, rowErr: {}, editing: null };
   var gpuSig = "";
 
   if (window.self !== window.top) document.documentElement.classList.add("embedded");
@@ -318,11 +328,6 @@
     return v > 0 ? v : null;
   }
 
-  function parseNumGpus(name) {
-    var m = /^(\d+)\s*x/i.exec(name || "");
-    return m ? parseInt(m[1], 10) : 1;
-  }
-
   function relTime(unix) {
     unix = Number(unix);
     if (!unix || unix <= 0) return "never";
@@ -347,23 +352,35 @@
   }
 
   /* ---------- rendering ---------- */
-  function renderGpuOptions() {
+  function gpuPrice(name) {
+    for (var i = 0; i < state.gpus.length; i++) if (state.gpus[i].name === name) return state.gpus[i].usd_per_hour;
+    return null;
+  }
+
+  function checkedGpus() {
+    return Array.prototype.map.call($("f-gpus").querySelectorAll("input:checked"), function (c) { return c.value; });
+  }
+
+  // NOTE: unavailable GPUs stay selectable; availability changes and is checked at each provision.
+  function renderGpuOptions(checked) {
     var sig = JSON.stringify(state.gpus);
-    if (sig === gpuSig) return;
+    if (sig === gpuSig && !checked) return;
     gpuSig = sig;
-    var sel = $("f-gpu");
-    var prev = sel.value;
-    sel.textContent = "";
-    var ph = el("option", null, state.gpus.length ? "Select a GPU..." : "No GPUs available");
-    ph.value = "";
-    sel.appendChild(ph);
+    var box = $("f-gpus");
+    var want = checked || checkedGpus();
+    box.textContent = "";
+    if (!state.gpus.length) { box.appendChild(el("span", "muted", "No GPUs listed (is the API key set?)")); return; }
     state.gpus.forEach(function (g) {
-      var o = el("option", null, g.name + " - " + money(g.usd_per_hour) + "/hr" + (g.available ? "" : " (unavailable)"));
-      o.value = g.name;
-      o.disabled = !g.available;
-      sel.appendChild(o);
+      var lab = el("label");
+      var cb = el("input");
+      cb.type = "checkbox";
+      cb.value = g.name;
+      cb.checked = want.indexOf(g.name) >= 0;
+      lab.appendChild(cb);
+      lab.appendChild(el("span", "mono", g.name));
+      lab.appendChild(el("span", "sub", money(g.usd_per_hour) + "/hr" + (g.available ? "" : ", none free now")));
+      box.appendChild(lab);
     });
-    if (prev) sel.value = prev;
   }
 
   function renderCost() {
@@ -403,15 +420,21 @@
       if (m.revision) tdRepo.appendChild(el("div", "sub mono", "@" + String(m.revision).slice(0, 8)));
       tr.appendChild(tdRepo);
 
+      // The GPU list cheapest first, with the one the deployment is on in full text.
       var tdGpu = el("td");
-      tdGpu.appendChild(el("div", null, m.gpu || "-"));
-      tdGpu.appendChild(el("div", "sub", money(m.usd_per_hour) + "/hr"));
+      (m.gpus || []).slice().sort(function (a, b) { return (gpuPrice(a) || 0) - (gpuPrice(b) || 0); }).forEach(function (g) {
+        var price = gpuPrice(g);
+        var line = el("div", g === m.gpu ? null : "sub", g + (price != null ? " · " + money(price) + "/hr" : ""));
+        if (g === m.gpu) line.title = "Current deployment";
+        tdGpu.appendChild(line);
+      });
       tr.appendChild(tdGpu);
 
       tr.appendChild(el("td", null, fmtContext(m.context)));
 
       var tdSt = el("td");
       tdSt.appendChild(el("span", "badge " + statusClass(m.status), m.status || "unknown"));
+      if (m.error) tdSt.appendChild(el("div", "row-err", m.error));
       tr.appendChild(tdSt);
 
       var tdLast = el("td", "muted", relTime(m.last_used_unix));
@@ -429,6 +452,10 @@
       sleep.type = "button";
       sleep.disabled = busy || m.status === "scaled-to-zero" || m.status === "idle";
       sleep.addEventListener("click", function () { rowAction(m.id, "/sleep?id=", "POST"); });
+      var edit = el("button", null, "Edit");
+      edit.type = "button";
+      edit.disabled = busy;
+      edit.addEventListener("click", function () { startEdit(m); });
       var rm = el("button", "danger", "Remove");
       rm.type = "button";
       rm.disabled = busy;
@@ -437,7 +464,7 @@
           rowAction(m.id, "", "DELETE");
         }
       });
-      acts.appendChild(wake); acts.appendChild(sleep); acts.appendChild(rm);
+      acts.appendChild(wake); acts.appendChild(sleep); acts.appendChild(edit); acts.appendChild(rm);
       tdAct.appendChild(acts);
       if (state.rowErr[m.id]) tdAct.appendChild(el("div", "row-err", state.rowErr[m.id]));
       tr.appendChild(tdAct);
@@ -489,12 +516,50 @@
     m.style.margin = "0";
   }
 
+  function json(v) { return v ? JSON.stringify(v) : ""; }
+
+  function startEdit(m) {
+    state.editing = m.id;
+    $("f-id").value = m.id;
+    $("f-id").readOnly = true;
+    $("f-name").value = m.display_name || "";
+    $("f-repo").value = m.hf_repo || "";
+    $("f-rev").value = m.revision || "";
+    $("f-ctx").value = String(m.context || "");
+    $("f-quant").value = m.quantization || "";
+    $("f-tool").value = m.tool_parser || "";
+    $("f-reason").value = m.reasoning_parser || "";
+    $("f-think").checked = !!m.enable_thinking;
+    $("f-gen").value = json(m.generation_config);
+    $("f-guard").value = m.loop_guard || "off";
+    $("f-spec").value = json(m.speculative_config);
+    renderGpuOptions(m.gpus || []);
+    $("form-title").textContent = "Edit " + m.id;
+    $("submit").textContent = "Save changes";
+    $("cancel").style.display = "";
+    $("edit-note").style.display = "";
+    setFormMsg("", "");
+    $("form").scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function stopEdit() {
+    state.editing = null;
+    $("form").reset();
+    $("f-id").readOnly = false;
+    renderGpuOptions([]);
+    $("form-title").textContent = "Add model";
+    $("submit").textContent = "Add model";
+    $("cancel").style.display = "none";
+    $("edit-note").style.display = "none";
+  }
+  $("cancel").addEventListener("click", function () { stopEdit(); setFormMsg("", ""); });
+
   $("form").addEventListener("submit", function (ev) {
     ev.preventDefault();
     var ctx = parseContext($("f-ctx").value);
     if (ctx == null) { setFormMsg("Invalid context length. Use e.g. 1048576, 1M or 256k.", "err"); return; }
-    var gpu = $("f-gpu").value;
-    if (!gpu) { setFormMsg("Select a GPU.", "err"); return; }
+    var gpus = checkedGpus();
+    if (!gpus.length) { setFormMsg("Select at least one GPU.", "err"); return; }
     var gen;
     try { gen = $("f-gen").value.trim() ? JSON.parse($("f-gen").value) : undefined; }
     catch (e) { setFormMsg("Default sampling must be a JSON object.", "err"); return; }
@@ -506,8 +571,7 @@
       display_name: $("f-name").value.trim(),
       hf_repo: $("f-repo").value.trim(),
       revision: $("f-rev").value.trim(),
-      gpu: gpu,
-      num_gpus: parseNumGpus(gpu),
+      gpus: gpus,
       context: ctx,
       quantization: $("f-quant").value.trim(),
       tool_parser: $("f-tool").value.trim(),
@@ -517,13 +581,16 @@
       generation_config: gen,
       speculative_config: spec
     };
+    var editing = state.editing;
     var btn = $("submit");
     btn.disabled = true;
     setFormMsg("Submitting...", "");
-    api("POST", "/models", body).then(function (d) {
-      setFormMsg("Model \"" + ((d.model && d.model.id) || body.id) + "\" added. It appears in Claude Code's /model picker after Claude Code restarts.", "ok");
-      $("form").reset();
-      return syncModels(); // refresh /v1/models so the model shows in the picker
+    api(editing ? "PUT" : "POST", "/models", body).then(function (d) {
+      setFormMsg(editing
+        ? "Model \"" + body.id + "\" saved." + (d.redeployed ? " Its deployment was deleted; the next request provisions one with the new settings." : "")
+        : "Model \"" + ((d.model && d.model.id) || body.id) + "\" added. It appears in Claude Code's /model picker after Claude Code restarts.", "ok");
+      stopEdit();
+      return syncModels(); // refresh /v1/models so the model (and its name) shows in the picker
     }).then(function () {
       return load();
     }).catch(function (e) {

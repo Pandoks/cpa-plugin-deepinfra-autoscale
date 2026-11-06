@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -51,28 +52,27 @@ func TestNormalizeModelID(t *testing.T) {
 }
 
 func TestModelValidate(t *testing.T) {
-	good := &Model{ID: "red-snow", HFRepo: "Owner/Model", GPU: "2xH200-141GB", Context: 1048576, LoopGuard: loopGuardOn}
+	good := &Model{ID: "red-snow", HFRepo: "Owner/Model", GPUs: []string{"2xH200-141GB", "1xB300-270GB"}, Context: 1048576, LoopGuard: loopGuardOn}
 	good.normalize()
 	if err := good.validate(); err != nil {
 		t.Fatalf("good model rejected: %v", err)
-	}
-	if good.NumGPUs != 2 {
-		t.Errorf("normalize NumGPUs=%d want 2", good.NumGPUs)
 	}
 	if good.MaxBatchSize != defaultMaxBatchSize {
 		t.Errorf("normalize MaxBatchSize=%d want %d", good.MaxBatchSize, defaultMaxBatchSize)
 	}
 
 	bad := []*Model{
-		{ID: "bad id!", HFRepo: "Owner/Model", GPU: "2xH200-141GB", Context: 1},
-		{ID: "ok", HFRepo: "noslash", GPU: "2xH200-141GB", Context: 1},
-		{ID: "ok", HFRepo: "a/b/c", GPU: "2xH200-141GB", Context: 1},
-		{ID: "ok", HFRepo: "Owner/Model", GPU: "H200", Context: 1},
-		{ID: "ok", HFRepo: "Owner/Model", GPU: "2xH200-141GB", Context: 0},
-		{ID: "ok", HFRepo: "Owner/Model", GPU: "2xH200-141GB", Context: 1, GenerationConfig: map[string]any{"presence": 1.5}},
-		{ID: "ok", HFRepo: "Owner/Model", GPU: "2xH200-141GB", Context: 1, GenerationConfig: map[string]any{"top_p": "0.9"}},
-		{ID: "ok", HFRepo: "Owner/Model", GPU: "2xH200-141GB", Context: 1, SpeculativeConfig: map[string]any{"model": "Owner/Draft"}},
-		{ID: "ok", HFRepo: "Owner/Model", GPU: "2xH200-141GB", Context: 1, LoopGuard: "auto"},
+		{ID: "bad id!", HFRepo: "Owner/Model", GPUs: []string{"2xH200-141GB"}, Context: 1},
+		{ID: "ok", HFRepo: "noslash", GPUs: []string{"2xH200-141GB"}, Context: 1},
+		{ID: "ok", HFRepo: "a/b/c", GPUs: []string{"2xH200-141GB"}, Context: 1},
+		{ID: "ok", HFRepo: "Owner/Model", GPUs: []string{"H200"}, Context: 1},
+		{ID: "ok", HFRepo: "Owner/Model", GPUs: []string{"2xH200-141GB"}, Context: 0},
+		{ID: "ok", HFRepo: "Owner/Model", GPUs: []string{"2xH200-141GB"}, Context: 1, GenerationConfig: map[string]any{"presence": 1.5}},
+		{ID: "ok", HFRepo: "Owner/Model", GPUs: []string{"2xH200-141GB"}, Context: 1, GenerationConfig: map[string]any{"top_p": "0.9"}},
+		{ID: "ok", HFRepo: "Owner/Model", GPUs: []string{"2xH200-141GB"}, Context: 1, SpeculativeConfig: map[string]any{"model": "Owner/Draft"}},
+		{ID: "ok", HFRepo: "Owner/Model", GPUs: []string{"2xH200-141GB"}, Context: 1, LoopGuard: "auto"},
+		{ID: "ok", HFRepo: "Owner/Model", Context: 1},
+		{ID: "ok", HFRepo: "Owner/Model", GPUs: []string{"1xA100-80GB", "1xA100-80GB"}, Context: 1},
 	}
 	for i, m := range bad {
 		if err := m.validate(); err == nil {
@@ -84,10 +84,12 @@ func TestModelValidate(t *testing.T) {
 func newTestStore(t *testing.T) *store {
 	t.Helper()
 	return &store{
-		models:   map[string]*Model{},
-		lastUsed: map[string]int64{},
-		runStart: map[string]int64{},
-		path:     filepath.Join(t.TempDir(), "state.json"),
+		models:       map[string]*Model{},
+		lastUsed:     map[string]int64{},
+		runStart:     map[string]int64{},
+		failedGPUs:   map[string]map[string]int64{},
+		provisionErr: map[string]string{},
+		path:         filepath.Join(t.TempDir(), "state.json"),
 	}
 }
 
@@ -120,7 +122,7 @@ func TestStoreAddRemovePersist(t *testing.T) {
 		t.Fatal("reloaded store missing model")
 	}
 	reloaded, _ := s2.get("red-snow")
-	if reloaded.NumGPUs != 2 || reloaded.Context != 1048576 {
+	if len(reloaded.GPUs) != 1 || reloaded.GPUs[0] != "2xH200-141GB" || reloaded.Context != 1048576 {
 		t.Errorf("reloaded model wrong: %+v", reloaded)
 	}
 
@@ -196,7 +198,7 @@ func TestDICreateBody(t *testing.T) {
 		SpeculativeConfig: map[string]any{"method": "dflash", "model": "Owner/Draft", "num_speculative_tokens": 8},
 	}
 	m.normalize()
-	body := diCreateBody(m, "red-snow-abc")
+	body := diCreateBody(m, "2xH200-141GB", "red-snow-abc")
 
 	if body["model_name"] != "red-snow-abc" || body["gpu"] != "H200-141GB" || body["num_gpus"] != 2 {
 		t.Errorf("base fields wrong: %+v", body)
@@ -228,7 +230,7 @@ func TestDICreateBody(t *testing.T) {
 	// With quantization set and no parsers: extra_args omitted, quantization present.
 	m2 := &Model{ID: "x", HFRepo: "O/M", GPU: "1xA100-80GB", Context: 4096, Quantization: "fp8"}
 	m2.normalize()
-	b2 := diCreateBody(m2, "x-abc")
+	b2 := diCreateBody(m2, "1xA100-80GB", "x-abc")
 	if _, ok := b2["extra_args"]; ok {
 		t.Error("extra_args should be omitted with no parsers")
 	}
@@ -347,6 +349,137 @@ func TestAddRollbackOnSaveFailure(t *testing.T) {
 	}
 	if s.has("x") {
 		t.Error("add must roll back the in-memory entry on persistence failure")
+	}
+}
+
+// State saved before GPU lists has one "gpu", which is both the choice and the deployment's GPU.
+func TestNormalizeKeepsSingleGPUState(t *testing.T) {
+	var m Model
+	if err := json.Unmarshal([]byte(`{"id":"m","hf_repo":"O/M","gpu":"1xB300-270GB","context":1024,"deploy_id":"D1"}`), &m); err != nil {
+		t.Fatal(err)
+	}
+	m.normalize()
+	if err := m.validate(); err != nil {
+		t.Fatalf("old state rejected: %v", err)
+	}
+	if len(m.GPUs) != 1 || m.GPUs[0] != "1xB300-270GB" || m.GPU != "1xB300-270GB" {
+		t.Errorf("GPUs=%v GPU=%q", m.GPUs, m.GPU)
+	}
+}
+
+func TestRankGPUs(t *testing.T) {
+	catalog := []gpuOption{
+		{Name: "1xB300-270GB", USDPerHour: 4.89, Available: false},
+		{Name: "2xH200-141GB", USDPerHour: 5.38, Available: true},
+		{Name: "1xH200-141GB", USDPerHour: 2.69, Available: true},
+		{Name: "2xA100-80GB", USDPerHour: 1.78, Available: true},
+		{Name: "1xRTXPRO6000-96GB", USDPerHour: 1.78, Available: true},
+	}
+	wanted := []string{"2xH200-141GB", "1xB300-270GB", "1xRTXPRO6000-96GB", "1xH200-141GB", "2xA100-80GB", "8xB200-180GB"}
+	got := rankGPUs(wanted, catalog, map[string]bool{"1xH200-141GB": true})
+	// Unavailable, recently failed and unknown GPUs drop out; equal prices keep the wanted order.
+	want := []string{"1xRTXPRO6000-96GB", "2xA100-80GB", "2xH200-141GB"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("rankGPUs=%v want %v", got, want)
+	}
+	if got := rankGPUs([]string{"1xB300-270GB"}, catalog, nil); len(got) != 0 {
+		t.Errorf("only unavailable GPUs gave %v", got)
+	}
+}
+
+// A start without capacity is accepted, and DeepInfra later returns the deployment to stopped with a
+// fail reason, as with "no capacity for 1xB300-270GB right now, try again later".
+func TestStartFailed(t *testing.T) {
+	started := time.Date(2026, 11, 6, 19, 50, 0, 0, time.UTC).Unix()
+	failed := diDeployment{Status: "stopped", FailReason: "no capacity for 1xB300-270GB right now, try again later", UpdatedAt: "2026-11-06T19:56:00+00:00"}
+	if !failed.startFailed(started) {
+		t.Error("stopped with a fail reason after the start should count as a failed start")
+	}
+	if failed.startFailed(0) {
+		t.Error("a deployment nobody started has no failed start")
+	}
+	if failed.startFailed(started + 3600) {
+		t.Error("a fail reason from before the start is stale")
+	}
+	idle := diDeployment{Status: "stopped", UpdatedAt: "2026-11-06T19:56:00+00:00"}
+	if idle.startFailed(started) {
+		t.Error("stopped without a fail reason is a normal stop")
+	}
+	starting := failed
+	starting.Status = "deploying"
+	if starting.startFailed(started) {
+		t.Error("a deployment still starting has not failed")
+	}
+}
+
+func TestNeedsRedeploy(t *testing.T) {
+	old := &Model{ID: "m", HFRepo: "O/M", GPUs: []string{"1xH200-141GB", "2xA100-80GB"}, Context: 1024,
+		GenerationConfig: map[string]any{"presence_penalty": 1.5}, DeployID: "D1", GPU: "1xH200-141GB"}
+	old.normalize()
+	edit := func(change func(*Model)) *Model {
+		m := *old
+		m.DeployID, m.GPU = "", ""
+		m.GenerationConfig = map[string]any{"presence_penalty": 1.5}
+		change(&m)
+		return &m
+	}
+	cases := []struct {
+		name   string
+		change func(*Model)
+		want   bool
+	}{
+		{"nothing", func(m *Model) {}, false},
+		{"name in Claude Code", func(m *Model) { m.DisplayName = "New" }, false},
+		{"loop guard", func(m *Model) { m.LoopGuard = loopGuardOn }, false},
+		{"GPU added", func(m *Model) { m.GPUs = append([]string{"1xB300-270GB"}, m.GPUs...) }, false},
+		{"other GPU removed", func(m *Model) { m.GPUs = []string{"1xH200-141GB"} }, false},
+		{"deployed GPU removed", func(m *Model) { m.GPUs = []string{"2xA100-80GB"} }, true},
+		{"context", func(m *Model) { m.Context = 2048 }, true},
+		{"sampling", func(m *Model) { m.GenerationConfig = map[string]any{"presence_penalty": 1.0} }, true},
+		{"repo", func(m *Model) { m.HFRepo = "O/Other" }, true},
+	}
+	for _, c := range cases {
+		if got := edit(c.change).needsRedeploy(old); got != c.want {
+			t.Errorf("%s: needsRedeploy=%v want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestRecentlyFailedExpires(t *testing.T) {
+	s := newTestStore(t)
+	m := &Model{ID: "m", HFRepo: "O/M", GPUs: []string{"1xA100-80GB"}, Context: 1024}
+	_ = s.add(m)
+	s.markGPUFailed("m", "1xA100-80GB", 1000)
+	if !s.recentlyFailed("m", 1000+gpuRetryAfter-1)["1xA100-80GB"] {
+		t.Error("GPU should be skipped within the retry window")
+	}
+	if s.recentlyFailed("m", 1000+gpuRetryAfter)["1xA100-80GB"] {
+		t.Error("GPU should be retried after the window")
+	}
+}
+
+func TestStoreUpdate(t *testing.T) {
+	s := newTestStore(t)
+	m := &Model{ID: "m", HFRepo: "O/M", GPUs: []string{"1xA100-80GB"}, Context: 1024}
+	_ = s.add(m)
+	if err := s.update(&Model{ID: "ghost", HFRepo: "O/M", GPUs: []string{"1xA100-80GB"}, Context: 1024}); err == nil {
+		t.Error("update of an unknown model should fail")
+	}
+	if err := s.update(&Model{ID: "m", HFRepo: "O/M", GPUs: []string{"2xA100-80GB", "1xA100-80GB"}, Context: 2048}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	s2 := newTestStore(t)
+	s2.load(s.path)
+	if got, _ := s2.get("m"); got.Context != 2048 || len(got.GPUs) != 2 {
+		t.Errorf("update not persisted: %+v", got)
+	}
+
+	s.path = filepath.Join(t.TempDir(), "nonexistent-dir\x00bad", "s.json")
+	if err := s.update(&Model{ID: "m", HFRepo: "O/M", GPUs: []string{"1xA100-80GB"}, Context: 4096}); err == nil {
+		t.Error("update should fail when persistence fails")
+	}
+	if got, _ := s.get("m"); got.Context != 2048 {
+		t.Errorf("failed update not rolled back: context=%d", got.Context)
 	}
 }
 

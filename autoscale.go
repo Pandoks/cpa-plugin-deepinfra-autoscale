@@ -1,10 +1,18 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
+
+// gpuRetryAfter is how long a GPU a model failed to start on is skipped before it is tried again.
+const gpuRetryAfter = int64(10 * 60)
+
+// errNoGPU means none of a model's GPUs can be provisioned right now.
+var errNoGPU = errors.New("no GPU available")
 
 // ensureRunning makes a model's deployment exist and be scaled up, returning the dashboard-facing
 // status. It never blocks on the (~12 min) cold start; callers fail fast while warming.
@@ -24,7 +32,7 @@ func ensureRunning(callbackID, id string) (string, error) {
 	}
 	now := time.Now().Unix()
 	if dep != nil && dep.Status == "running" {
-		modelStore.setDeployment(m.ID, dep.DeployID, dep.ModelName)
+		modelStore.setDeployment(m.ID, dep.DeployID, dep.ModelName, m.GPU)
 		if _, runStart := modelStore.activity(m.ID); runStart == 0 {
 			modelStore.markRunning(m.ID, now)
 		}
@@ -47,47 +55,136 @@ func ensureRunningLocked(callbackID, id string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	now := time.Now().Unix()
+	status, err := transition(callbackID, m, dep, time.Now().Unix())
+	if err != nil {
+		modelStore.setProvisionError(id, err.Error())
+	} else {
+		modelStore.setProvisionError(id, "")
+	}
+	return status, err
+}
 
+// transition moves a model's deployment toward running. A model runs on the cheapest of its GPUs
+// that DeepInfra has available; a GPU it fails to start on is skipped for gpuRetryAfter, so repeated
+// calls walk down the list until one starts or none is left.
+func transition(callbackID string, m *Model, dep *diDeployment, now int64) (string, error) {
 	if dep == nil {
-		created, createErr := diCreate(callbackID, m)
-		if createErr != nil {
-			return "", createErr
+		gpus, err := availableGPUs(callbackID, m, now)
+		if err != nil {
+			return "", err
 		}
-		modelStore.setDeployment(m.ID, created.DeployID, created.ModelName)
-		modelStore.markRunning(m.ID, now)
-		return dashboardStatus(created), nil
+		return createOn(callbackID, m, gpus, now)
 	}
 
-	modelStore.setDeployment(m.ID, dep.DeployID, dep.ModelName)
+	modelStore.setDeployment(m.ID, dep.DeployID, dep.ModelName, m.GPU)
+	_, runStart := modelStore.activity(m.ID)
 
 	switch {
 	case dep.Status == "failed":
-		// A failed deployment can't serve and holds the name; replace it.
+		// A failed deployment can't serve and holds the name; replace it on the next GPU.
+		failedOn(m, dep, now)
 		if delErr := diDelete(callbackID, dep.DeployID); delErr != nil {
 			return "", delErr
 		}
-		created, createErr := diCreate(callbackID, m)
-		if createErr != nil {
-			return "", createErr
+		gpus, err := availableGPUs(callbackID, m, now)
+		if err != nil {
+			return "", err
 		}
-		modelStore.setDeployment(m.ID, created.DeployID, created.ModelName)
-		modelStore.markRunning(m.ID, now)
-		return dashboardStatus(created), nil
+		return createOn(callbackID, m, gpus, now)
 	case dep.stopped():
-		if startErr := diStart(callbackID, dep.DeployID); startErr != nil {
-			return "", startErr
+		if dep.startFailed(runStart) {
+			failedOn(m, dep, now)
+			modelStore.clearRunning(m.ID)
 		}
-		modelStore.markRunning(m.ID, now)
-		return "deploying", nil
+		gpus, err := availableGPUs(callbackID, m, now)
+		if err != nil {
+			return "", err
+		}
+		if len(gpus) == 0 {
+			return "", noGPUError(m, now) // keep the stopped deployment for when its GPU frees up
+		}
+		if gpus[0] == m.GPU {
+			startErr := diStart(callbackID, dep.DeployID)
+			if startErr == nil {
+				modelStore.markRunning(m.ID, now)
+				return "deploying", nil
+			}
+			hostLog("warn", fmt.Sprintf("deepinfra-autoscale: start %s on %s failed: %v", m.ID, m.GPU, startErr))
+			modelStore.markGPUFailed(m.ID, m.GPU, now)
+			if gpus = gpus[1:]; len(gpus) == 0 {
+				return "", noGPUError(m, now)
+			}
+		}
+		// Its GPU is unavailable or no longer the cheapest: replace it rather than restart it.
+		if delErr := diDelete(callbackID, dep.DeployID); delErr != nil {
+			return "", delErr
+		}
+		return createOn(callbackID, m, gpus, now)
 	case dep.Status == "running":
-		if _, runStart := modelStore.activity(m.ID); runStart == 0 {
+		if runStart == 0 {
 			modelStore.markRunning(m.ID, now)
 		}
 		return "running", nil
 	default:
 		return dashboardStatus(dep), nil
 	}
+}
+
+// availableGPUs returns the model's GPUs that DeepInfra has available right now and that it hasn't
+// recently failed to start on, cheapest first. It reads availability fresh, not from the cache.
+func availableGPUs(callbackID string, m *Model, now int64) ([]string, error) {
+	resetGPUCache()
+	catalog, err := diGPUs(callbackID)
+	if err != nil {
+		return nil, fmt.Errorf("read GPU availability: %w", err)
+	}
+	return rankGPUs(m.GPUs, catalog, modelStore.recentlyFailed(m.ID, now)), nil
+}
+
+// createOn creates the model's deployment on the first of gpus that DeepInfra accepts.
+func createOn(callbackID string, m *Model, gpus []string, now int64) (string, error) {
+	if len(gpus) == 0 {
+		return "", noGPUError(m, now)
+	}
+	var rejected []string
+	for _, gpu := range gpus {
+		created, err := diCreate(callbackID, m, gpu)
+		if err != nil {
+			hostLog("warn", fmt.Sprintf("deepinfra-autoscale: create %s on %s failed: %v", m.ID, gpu, err))
+			rejected = append(rejected, gpu+": "+err.Error())
+			continue
+		}
+		modelStore.setDeployment(m.ID, created.DeployID, created.ModelName, gpu)
+		modelStore.markRunning(m.ID, now)
+		return dashboardStatus(created), nil
+	}
+	return "", fmt.Errorf("could not create %s on any of its GPUs: %s", m.ID, strings.Join(rejected, "; "))
+}
+
+// failedOn records that a model's deployment failed to start on its GPU.
+func failedOn(m *Model, dep *diDeployment, now int64) {
+	modelStore.markGPUFailed(m.ID, m.GPU, now)
+	hostLog("warn", fmt.Sprintf("deepinfra-autoscale: %s failed on %s (%s); trying its next GPU", m.ID, m.GPU, dep.FailReason))
+}
+
+func noGPUError(m *Model, now int64) error {
+	failed := modelStore.recentlyFailed(m.ID, now)
+	var unavailable, failedNames []string
+	for _, gpu := range m.GPUs {
+		if failed[gpu] {
+			failedNames = append(failedNames, gpu)
+		} else {
+			unavailable = append(unavailable, gpu)
+		}
+	}
+	var parts []string
+	if len(unavailable) > 0 {
+		parts = append(parts, "DeepInfra has none free of "+strings.Join(unavailable, ", "))
+	}
+	if len(failedNames) > 0 {
+		parts = append(parts, fmt.Sprintf("%s just failed to start (retried after %d min)", strings.Join(failedNames, ", "), gpuRetryAfter/60))
+	}
+	return fmt.Errorf("%w for %s: %s", errNoGPU, m.ID, strings.Join(parts, "; "))
 }
 
 // wakeModel starts a model and records activity (used by the dashboard wake action).
@@ -239,6 +336,14 @@ func runIdleSweep() {
 			continue
 		}
 		lastUsed, runStart := modelStore.activity(m.ID)
+
+		// A model in use whose GPU failed moves down its GPU list without waiting for a request.
+		if (dep.Status == "failed" || dep.startFailed(runStart)) && lastUsed > 0 && now-lastUsed <= idleCutoff {
+			if _, err := ensureRunningLocked("", m.ID); err != nil {
+				hostLog("warn", fmt.Sprintf("deepinfra-autoscale: provision %s: %v", m.ID, err))
+			}
+			continue
+		}
 
 		// Stuck provisioning: a deployment that never reaches running can't be stopped (DeepInfra
 		// rejects /stop on non-running), so delete it once it passes stuckProvisionLimit.

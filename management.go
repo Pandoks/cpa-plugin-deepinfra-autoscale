@@ -22,6 +22,7 @@ func handleManagementRegister() []byte {
 		Routes: []pluginapi.ManagementRoute{
 			{Method: "GET", Path: "/" + pluginID + "/models", Description: "List managed models"},
 			{Method: "POST", Path: "/" + pluginID + "/models", Description: "Add a managed model"},
+			{Method: "PUT", Path: "/" + pluginID + "/models", Description: "Edit a managed model"},
 			{Method: "DELETE", Path: "/" + pluginID + "/models", Description: "Remove a managed model"},
 			{Method: "POST", Path: "/" + pluginID + "/models/wake", Description: "Start a model's GPUs"},
 			{Method: "POST", Path: "/" + pluginID + "/models/sleep", Description: "Scale a model to zero"},
@@ -76,6 +77,9 @@ func handleManagementHandle(req []byte) []byte {
 	case strings.HasSuffix(path, "/models") && r.Method == "POST":
 		return envelope(addModelResponse(r.Body), nil)
 
+	case strings.HasSuffix(path, "/models") && r.Method == "PUT":
+		return envelope(updateModelResponse(cb, r.Body), nil)
+
 	case strings.HasSuffix(path, "/models") && r.Method == "DELETE":
 		return envelope(removeModelResponse(cb, r.Query.Get("id")), nil)
 	}
@@ -89,8 +93,8 @@ type modelView struct {
 	DisplayName       string         `json:"display_name,omitempty"`
 	HFRepo            string         `json:"hf_repo"`
 	Revision          string         `json:"revision,omitempty"`
-	GPU               string         `json:"gpu"`
-	NumGPUs           int            `json:"num_gpus"`
+	GPUs              []string       `json:"gpus"`
+	GPU               string         `json:"gpu,omitempty"`
 	Context           int64          `json:"context"`
 	Quantization      string         `json:"quantization,omitempty"`
 	ToolParser        string         `json:"tool_parser,omitempty"`
@@ -104,6 +108,7 @@ type modelView struct {
 	DeployID          string         `json:"deploy_id,omitempty"`
 	LastUsedUnix      int64          `json:"last_used_unix"`
 	USDPerHour        float64        `json:"usd_per_hour"`
+	Error             string         `json:"error,omitempty"`
 }
 
 func listModelsResponse(cb string) pluginapi.ManagementResponse {
@@ -130,11 +135,11 @@ func listModelsResponse(cb string) pluginapi.ManagementResponse {
 		lastUsed, _ := modelStore.activity(m.ID)
 		dep := depByID[m.ID]
 		v := modelView{
-			ID: m.ID, DisplayName: m.DisplayName, HFRepo: m.HFRepo, Revision: m.Revision, GPU: m.GPU, NumGPUs: m.NumGPUs,
+			ID: m.ID, DisplayName: m.DisplayName, HFRepo: m.HFRepo, Revision: m.Revision, GPUs: m.GPUs, GPU: m.GPU,
 			Context: m.Context, Quantization: m.Quantization, ToolParser: m.ToolParser,
 			ReasoningParser: m.ReasoningParser, EnableThinking: m.EnableThinking, GenerationConfig: m.GenerationConfig,
 			SpeculativeConfig: m.SpeculativeConfig, LoopGuard: m.LoopGuard, DeployID: m.DeployID, LastUsedUnix: lastUsed, USDPerHour: gpuPrice(m.GPU),
-			Status: "scaled-to-zero", MinInstances: 0,
+			Status: "scaled-to-zero", MinInstances: 0, Error: modelStore.provisionError(m.ID),
 		}
 		if listErr != nil {
 			v.Status = "unknown"
@@ -185,6 +190,7 @@ func addModelResponse(body []byte) pluginapi.ManagementResponse {
 		return jsonResponse(http.StatusBadRequest, map[string]string{"error": "decode model: " + err.Error()})
 	}
 	m.normalize()
+	m.GPU = "" // set when a deployment is created
 	if err := m.validate(); err != nil {
 		return jsonResponse(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
@@ -198,6 +204,39 @@ func addModelResponse(body []byte) pluginapi.ManagementResponse {
 		return jsonResponse(http.StatusInternalServerError, map[string]string{"error": "could not persist model: " + err.Error()})
 	}
 	return jsonResponse(http.StatusOK, map[string]any{"ok": true, "model": m})
+}
+
+// updateModelResponse replaces a model's settings (its id is fixed). A change the running deployment
+// can't pick up deletes the deployment, so the next request provisions one with the new settings.
+func updateModelResponse(cb string, body []byte) pluginapi.ManagementResponse {
+	var m Model
+	if err := json.Unmarshal(body, &m); err != nil {
+		return jsonResponse(http.StatusBadRequest, map[string]string{"error": "decode model: " + err.Error()})
+	}
+	m.normalize()
+	if err := m.validate(); err != nil {
+		return jsonResponse(http.StatusBadRequest, map[string]string{"error": err.Error()})
+	}
+	unlock := modelStore.lock(m.ID)
+	defer unlock()
+	old, ok := modelStore.get(m.ID)
+	if !ok {
+		return jsonResponse(http.StatusNotFound, map[string]string{"error": "model " + m.ID + " not found"})
+	}
+	m.DeployID, m.DeepInfraName, m.GPU = old.DeployID, old.DeepInfraName, old.GPU
+	redeploy := m.needsRedeploy(old) && (old.DeployID != "" || old.DeepInfraName != "")
+	if redeploy {
+		if err := deleteDeployment(cb, old); err != nil {
+			return jsonResponse(http.StatusBadGateway, map[string]string{"error": "delete deployment: " + err.Error()})
+		}
+		m.DeployID, m.DeepInfraName, m.GPU = "", "", ""
+		modelStore.clearRunning(m.ID)
+	}
+	if err := modelStore.update(&m); err != nil {
+		return jsonResponse(http.StatusInternalServerError, map[string]string{"error": "could not persist model: " + err.Error()})
+	}
+	modelStore.setProvisionError(m.ID, "")
+	return jsonResponse(http.StatusOK, map[string]any{"ok": true, "model": m, "redeployed": redeploy})
 }
 
 func removeModelResponse(cb, id string) pluginapi.ManagementResponse {

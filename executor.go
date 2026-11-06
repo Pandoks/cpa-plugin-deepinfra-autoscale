@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -85,6 +86,9 @@ func prepareUpstream(r *executorRequest) (url string, headers map[string][]strin
 	modelStore.markUsed(id, time.Now().Unix())
 
 	status, err := ensureRunning(r.HostCallbackID, id)
+	if errors.Is(err, errNoGPU) {
+		return "", nil, nil, "", errorEnvelopeStatus("no_gpu", err.Error(), http.StatusServiceUnavailable)
+	}
 	if err != nil {
 		return "", nil, nil, "", errorEnvelopeStatus("deepinfra_error", err.Error(), http.StatusBadGateway)
 	}

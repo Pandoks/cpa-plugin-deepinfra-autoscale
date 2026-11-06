@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,8 +18,12 @@ type diDeployment struct {
 	DeployID  string `json:"deploy_id"`
 	ModelName string `json:"model_name"`
 	Status    string `json:"status"`
-	CreatedAt string `json:"created_at"`
-	Settings  *struct {
+	// FailReason says why the last create or start failed, e.g. "no-gpu-available: failed to
+	// allocate GPUs, try again later".
+	FailReason string `json:"fail_reason"`
+	CreatedAt  string `json:"created_at"`
+	UpdatedAt  string `json:"updated_at"`
+	Settings   *struct {
 		MinInstances int `json:"min_instances"`
 		MaxInstances int `json:"max_instances"`
 	} `json:"settings"`
@@ -30,6 +35,16 @@ var diGone = map[string]bool{"deleted": true, "deleting": true}
 // diStopped reports whether a deployment is stopped (scaled to zero; not billing).
 func (d *diDeployment) stopped() bool {
 	return d.Status == "stopped"
+}
+
+// startFailed reports whether a start since startedAt (unix seconds) fell back to stopped: DeepInfra
+// accepts a start without capacity, then returns the deployment to stopped with a fail reason.
+func (d *diDeployment) startFailed(startedAt int64) bool {
+	if !d.stopped() || d.FailReason == "" || startedAt == 0 {
+		return false
+	}
+	updated, err := time.Parse(time.RFC3339, d.UpdatedAt)
+	return err == nil && updated.Unix() >= startedAt
 }
 
 func diAuthHeaders() map[string][]string {
@@ -118,8 +133,8 @@ func deploymentName(id string, now time.Time) string {
 	return base + "-" + strconv.FormatInt(now.Unix(), 36)
 }
 
-func diCreateBody(m *Model, name string) map[string]any {
-	gpu, num, _ := parseGPU(m.GPU)
+func diCreateBody(m *Model, gpuConfig, name string) map[string]any {
+	gpu, num, _ := parseGPU(gpuConfig)
 	hf := map[string]any{"repo": m.HFRepo}
 	if m.Revision != "" {
 		hf["revision"] = m.Revision
@@ -164,9 +179,9 @@ func diCreateBody(m *Model, name string) map[string]any {
 	return body
 }
 
-// diCreate creates the deployment for a model (starting at one instance).
-func diCreate(callbackID string, m *Model) (*diDeployment, error) {
-	body, _ := json.Marshal(diCreateBody(m, deploymentName(m.ID, time.Now())))
+// diCreate creates the deployment for a model on one GPU config (starting at one instance).
+func diCreate(callbackID string, m *Model, gpu string) (*diDeployment, error) {
+	body, _ := json.Marshal(diCreateBody(m, gpu, deploymentName(m.ID, time.Now())))
 	resp, err := httpDo(callbackID, "POST", deepInfraAPI+"/deploy/llm", diAuthHeaders(), body)
 	if err != nil {
 		return nil, err
@@ -279,6 +294,25 @@ func diGPUs(callbackID string) ([]gpuOption, error) {
 	gpuCacheTime = time.Now()
 	gpuMu.Unlock()
 	return out, nil
+}
+
+// rankGPUs orders the wanted GPU configs that the catalog lists as available and that haven't failed
+// recently, cheapest first; equal prices keep the wanted order.
+func rankGPUs(wanted []string, catalog []gpuOption, failed map[string]bool) []string {
+	price := map[string]float64{}
+	for _, g := range catalog {
+		if g.Available {
+			price[g.Name] = g.USDPerHour
+		}
+	}
+	out := []string{}
+	for _, gpu := range wanted {
+		if _, ok := price[gpu]; ok && !failed[gpu] {
+			out = append(out, gpu)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return price[out[i]] < price[out[j]] })
+	return out
 }
 
 // gpuPrice returns the hourly price for a GPU config string, using the cache (no fetch).

@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,18 +20,19 @@ import (
 // Model is a user-defined DeepInfra-hosted model, managed from the dashboard and persisted to the
 // state file so it survives restarts.
 type Model struct {
-	ID              string `json:"id"`
-	DisplayName     string `json:"display_name,omitempty"`
-	HFRepo          string `json:"hf_repo"`
-	Revision        string `json:"revision,omitempty"`
-	GPU             string `json:"gpu"` // full config, e.g. "2xH200-141GB"
-	NumGPUs         int    `json:"num_gpus"`
-	Context         int64  `json:"context"`
-	Quantization    string `json:"quantization,omitempty"`
-	ToolParser      string `json:"tool_parser,omitempty"`
-	ReasoningParser string `json:"reasoning_parser,omitempty"`
-	EnableThinking  bool   `json:"enable_thinking,omitempty"`
-	MaxBatchSize    int    `json:"max_batch_size,omitempty"`
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name,omitempty"`
+	HFRepo      string `json:"hf_repo"`
+	Revision    string `json:"revision,omitempty"`
+	// GPUs are the configs the model may run on, e.g. "2xH200-141GB"; provisioning takes the
+	// cheapest one DeepInfra has available and moves down the list when one fails.
+	GPUs            []string `json:"gpus"`
+	Context         int64    `json:"context"`
+	Quantization    string   `json:"quantization,omitempty"`
+	ToolParser      string   `json:"tool_parser,omitempty"`
+	ReasoningParser string   `json:"reasoning_parser,omitempty"`
+	EnableThinking  bool     `json:"enable_thinking,omitempty"`
+	MaxBatchSize    int      `json:"max_batch_size,omitempty"`
 	// GenerationConfig is the deployment's default sampling, for clients like Claude Code that send none.
 	GenerationConfig map[string]any `json:"generation_config,omitempty"`
 	// SpeculativeConfig is vLLM's --speculative-config, e.g. a draft model that speeds up decoding.
@@ -37,9 +40,11 @@ type Model struct {
 	// LoopGuard is "on", "observe" or "off" (the default); see loopguard.go.
 	LoopGuard string `json:"loop_guard,omitempty"`
 
-	// Deployment linkage, learned at create/reconcile time and persisted.
+	// Deployment linkage, learned at create/reconcile time and persisted. GPU is the config the
+	// deployment was created on.
 	DeployID      string `json:"deploy_id,omitempty"`
 	DeepInfraName string `json:"deepinfra_name,omitempty"`
+	GPU           string `json:"gpu,omitempty"`
 }
 
 const defaultMaxBatchSize = 64
@@ -54,8 +59,18 @@ func (m *Model) validate() error {
 	if strings.Count(m.HFRepo, "/") != 1 || strings.TrimSpace(m.HFRepo) != m.HFRepo || m.HFRepo == "" {
 		return fmt.Errorf("invalid hf_repo %q (expected owner/name)", m.HFRepo)
 	}
-	if _, _, err := parseGPU(m.GPU); err != nil {
-		return err
+	if len(m.GPUs) == 0 {
+		return fmt.Errorf("select at least one GPU")
+	}
+	seen := map[string]bool{}
+	for _, gpu := range m.GPUs {
+		if _, _, err := parseGPU(gpu); err != nil {
+			return err
+		}
+		if seen[gpu] {
+			return fmt.Errorf("gpu %q is listed twice", gpu)
+		}
+		seen[gpu] = true
 	}
 	if m.Context <= 0 {
 		return fmt.Errorf("context must be positive")
@@ -94,8 +109,8 @@ var generationConfigKeys = map[string]bool{
 // normalize fills derived/default fields.
 func (m *Model) normalize() {
 	m.DisplayName = strings.TrimSpace(m.DisplayName)
-	if _, n, err := parseGPU(m.GPU); err == nil {
-		m.NumGPUs = n
+	if len(m.GPUs) == 0 && m.GPU != "" {
+		m.GPUs = []string{m.GPU} // state from before GPU lists
 	}
 	if m.MaxBatchSize <= 0 {
 		m.MaxBatchSize = defaultMaxBatchSize
@@ -103,6 +118,22 @@ func (m *Model) normalize() {
 }
 
 var gpuPattern = regexp.MustCompile(`^(\d+)x(.+)$`)
+
+// needsRedeploy reports whether updating a model from old to m invalidates its deployment: any
+// setting baked in at creation changed, or its GPU was taken off the list. The name in Claude Code
+// and the loop guard apply per request, and a new GPU list applies at the next wake.
+func (m *Model) needsRedeploy(old *Model) bool {
+	if old.GPU != "" && !slices.Contains(m.GPUs, old.GPU) {
+		return true
+	}
+	return !reflect.DeepEqual(old.deploymentSettings(), m.deploymentSettings())
+}
+
+func (m Model) deploymentSettings() Model {
+	m.DisplayName, m.LoopGuard, m.GPUs = "", "", nil
+	m.DeployID, m.DeepInfraName, m.GPU = "", "", ""
+	return m
+}
 
 // parseGPU splits a dashboard GPU string like "2xH200-141GB" into the DeepInfra gpu name
 // ("H200-141GB") and GPU count (2).
@@ -124,17 +155,23 @@ type store struct {
 	models   map[string]*Model
 	lastUsed map[string]int64 // model id -> unix seconds of last request
 	runStart map[string]int64 // model id -> unix seconds the current running instance was woken
-	path     string
+	// failedGPUs is model id -> GPU config -> unix seconds a deployment on it last failed to start.
+	failedGPUs map[string]map[string]int64
+	// provisionErr is model id -> why the last provisioning attempt found no GPU, for the dashboard.
+	provisionErr map[string]string
+	path         string
 
 	idLocksMu sync.Mutex
 	idLocks   map[string]*sync.Mutex
 }
 
 var modelStore = &store{
-	models:   map[string]*Model{},
-	lastUsed: map[string]int64{},
-	runStart: map[string]int64{},
-	idLocks:  map[string]*sync.Mutex{},
+	models:       map[string]*Model{},
+	lastUsed:     map[string]int64{},
+	runStart:     map[string]int64{},
+	failedGPUs:   map[string]map[string]int64{},
+	provisionErr: map[string]string{},
+	idLocks:      map[string]*sync.Mutex{},
 }
 
 // lock serializes provision/wake/sleep/remove for one model id so they can't race into an
@@ -243,6 +280,22 @@ func (s *store) add(m *Model) error {
 	return nil
 }
 
+// update replaces an existing model and persists, rolling back if persistence fails.
+func (s *store) update(m *Model) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	old, exists := s.models[m.ID]
+	if !exists {
+		return fmt.Errorf("model %q not found", m.ID)
+	}
+	s.models[m.ID] = m
+	if err := s.saveLocked(); err != nil {
+		s.models[m.ID] = old
+		return err
+	}
+	return nil
+}
+
 // remove deletes a model and its activity, and persists. Returns the removed model.
 func (s *store) remove(id string) (*Model, bool) {
 	s.mu.Lock()
@@ -254,19 +307,22 @@ func (s *store) remove(id string) (*Model, bool) {
 	delete(s.models, id)
 	delete(s.lastUsed, id)
 	delete(s.runStart, id)
+	delete(s.failedGPUs, id)
+	delete(s.provisionErr, id)
 	if err := s.saveLocked(); err != nil {
 		hostLog("error", fmt.Sprintf("deepinfra-autoscale: persist after remove %s: %v", id, err))
 	}
 	return m, true
 }
 
-// setDeployment records the DeepInfra deploy linkage for a model and persists.
-func (s *store) setDeployment(id, deployID, deepInfraName string) {
+// setDeployment records the DeepInfra deploy linkage for a model and the GPU it runs on, and persists.
+func (s *store) setDeployment(id, deployID, deepInfraName, gpu string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if m, ok := s.models[id]; ok {
 		m.DeployID = deployID
 		m.DeepInfraName = deepInfraName
+		m.GPU = gpu
 		if err := s.saveLocked(); err != nil {
 			hostLog("error", fmt.Sprintf("deepinfra-autoscale: persist deploy linkage %s: %v", id, err))
 		}
@@ -295,6 +351,47 @@ func (s *store) clearRunning(id string) {
 	delete(s.runStart, id)
 }
 
+func (s *store) markGPUFailed(id, gpu string, now int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.models[id]; !ok || gpu == "" {
+		return
+	}
+	if s.failedGPUs[id] == nil {
+		s.failedGPUs[id] = map[string]int64{}
+	}
+	s.failedGPUs[id][gpu] = now
+}
+
+// recentlyFailed returns the GPUs a model failed to start on within gpuRetryAfter of now.
+func (s *store) recentlyFailed(id string, now int64) map[string]bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := map[string]bool{}
+	for gpu, at := range s.failedGPUs[id] {
+		if now-at < gpuRetryAfter {
+			out[gpu] = true
+		}
+	}
+	return out
+}
+
+func (s *store) setProvisionError(id, msg string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if msg == "" {
+		delete(s.provisionErr, id)
+	} else if _, ok := s.models[id]; ok {
+		s.provisionErr[id] = msg
+	}
+}
+
+func (s *store) provisionError(id string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.provisionErr[id]
+}
+
 func (s *store) activity(id string) (lastUsed, runStart int64) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -319,7 +416,7 @@ func (m *Model) toModelInfo() pluginapi.ModelInfo {
 		Type:                       "chat",
 		DisplayName:                displayName,
 		Name:                       name,
-		Description:                fmt.Sprintf("DeepInfra %s on %s", m.HFRepo, m.GPU),
+		Description:                fmt.Sprintf("DeepInfra %s on %s", m.HFRepo, strings.Join(m.GPUs, " or ")),
 		ContextLength:              m.Context,
 		InputTokenLimit:            m.Context,
 		OutputTokenLimit:           m.Context,
