@@ -4,189 +4,380 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>DeepInfra Autoscale</title>
+<script>
+// Before first paint: the embedded class and the theme, so the page never shows the wrong palette or layout.
+(function () {
+  var root = document.documentElement, panel = null;
+  try { panel = window.self !== window.top ? window.parent.document.documentElement : null; } catch (e) {}
+  if (window.self !== window.top) root.classList.add("embedded");
+  var t = panel ? panel.getAttribute("data-theme") : matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "white";
+  if (t) root.setAttribute("data-theme", t);
+  try { if (!localStorage.getItem("cpa_mgmt_key") && !localStorage.getItem("cli-proxy-auth")) root.classList.add("nokey0"); } catch (e) {}
+})();
+</script>
 <style>
   /* NOTE: the management panel's palettes; data-theme mirrors the panel's (none = light). */
   :root {
     --bg: #f0eee8; --panel: #faf9f5; --panel2: #fffdf9; --border: #e3e1db;
-    --text: #2d2a26; --muted: #6d6760; --accent: #8b8680; --accent-h: #7f7a74;
+    --text: #2d2a26; --muted: #6d6760;
     --green: #10b981; --amber: #d97706; --red: #c65746; --gray: #a29c95;
+    color-scheme: light;
   }
-  [data-theme=white] {
-    --bg: #fff; --panel: #fff; --panel2: #f6f6f6; --border: #e5e5e5;
-  }
+  [data-theme=white] { --bg: #fff; --panel: #fff; --panel2: #f6f6f6; --border: #e5e5e5; }
   [data-theme=dark] {
     --bg: #151412; --panel: #1d1b18; --panel2: #262320; --border: #3a3530;
-    --text: #f6f4f1; --muted: #9c958d; --accent: #8b8680; --accent-h: #9a948e;
-    --amber: #f59e0b; --gray: #9c958d;
+    --text: #f6f4f1; --muted: #9c958d; --amber: #f59e0b; --gray: #9c958d;
+    color-scheme: dark;
+  }
+  /* Text versions of the palette colors, mixed toward --text so they pass WCAG AA in every theme. */
+  :root {
+    --err: color-mix(in srgb, var(--red) 70%, var(--text));
+    --warn: color-mix(in srgb, var(--amber) 55%, var(--text));
+    --field: color-mix(in srgb, var(--muted) 75%, var(--border)); /* 3:1 field borders */
+    --hover: color-mix(in srgb, var(--text) 7%, transparent);
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --shadow: 0 8px 24px rgba(0, 0, 0, .25);
+    accent-color: var(--text);
   }
   * { box-sizing: border-box; }
-  body {
-    margin: 0; background: var(--bg); color: var(--text);
-    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
-  }
-  header {
-    display: flex; flex-wrap: wrap; gap: 16px; align-items: center; justify-content: space-between;
-    padding: 16px 24px; border-bottom: 1px solid var(--border); background: var(--panel);
-  }
+  [hidden] { display: none !important; } .nokey0 .app { visibility: hidden; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu, sans-serif; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 20px 16px 48px; }
   /* NOTE: the management panel floats its toolbar over the top-right of embedded plugin pages. */
-  .embedded header { padding-right: 220px; }
-  h1 { font-size: 18px; margin: 0; font-weight: 600; }
-  h2 { font-size: 15px; margin: 0 0 12px; font-weight: 600; }
+  .embedded .wrap { padding-top: 64px; }
   .sub { color: var(--muted); font-size: 12px; }
-  .head-right { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; }
-  .cost { text-align: right; }
-  .cost b { font-size: 20px; font-variant-numeric: tabular-nums; }
-  main { max-width: 1200px; margin: 0 auto; padding: 24px; display: grid; gap: 24px; }
-  section { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
-  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
-  input[type=text], input[type=password], select {
-    width: 100%; background: var(--panel2); color: var(--text); border: 1px solid var(--border);
-    border-radius: 6px; padding: 8px 10px; font: inherit; min-width: 0;
+  .sr { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  button, input, select, textarea { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--text); outline-offset: 1px; }
+  ::placeholder { color: var(--muted); opacity: 1; }
+  .btn { border: 1px solid var(--field); background: transparent; border-radius: 6px; padding: 4px 10px; cursor: pointer; white-space: nowrap; }
+  .btn:hover { background: var(--hover); }
+  .btn.primary { background: var(--text); color: var(--bg); border-color: var(--text); font-weight: 600; }
+  .btn.primary:hover { background: color-mix(in srgb, var(--text) 85%, var(--bg)); }
+  .btn, .chip, .chips, .opt, summary, .link, .msg { -webkit-user-select: none; user-select: none; } /* a double-click doesn't select their text */
+  #menu-info { overflow-wrap: anywhere; }
+  .banner .btn { height: 24px; }
+  .btn.ghost { border-color: transparent; }
+  .btn.danger { color: var(--muted); border-color: transparent; margin-left: auto; } /* not read as part of a red message */
+  .btn.danger:hover, .btn.danger:focus-visible { color: var(--err); }
+  .btn[aria-busy=true] { cursor: progress; } /* the message says it; dimming would fail contrast */
+  .icon { width: 26px; height: 24px; padding: 0; display: inline-grid; place-items: center; border: 0; border-radius: 6px; background: none; color: var(--muted); cursor: pointer; }
+  .icon:hover { background: var(--hover); color: var(--text); }
+  input, select, textarea { width: 100%; background: var(--panel2); border: 1px solid var(--field); border-radius: 6px; padding: 6px 9px; }
+  input[type=checkbox] { width: auto; }
+  #f-id[readonly] { background: transparent; border-color: transparent; padding-left: 4px; margin-left: -4px; width: calc(100% + 4px); } /* shown to copy, not to change */
+  #f-id[readonly]:focus-visible { outline-offset: 1px; }
+  #s-key-help:empty { min-height: 17px; } .pop .sub.err { color: var(--err); } .pop .sub.warn { color: var(--warn); }
+  input[type=number] { -moz-appearance: textfield; }
+  input::-webkit-outer-spin-button, input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  textarea { font-family: var(--mono); font-size: 12px; resize: vertical; }
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+
+  .app { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; }
+  .bar { position: relative; display: flex; align-items: center; gap: 10px; min-height: 50px; padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  .bar h1 { font-size: 13px; margin: 0; } .bar .grow { flex: 1; }
+  .embedded .bar h1 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); } /* the panel's sidebar names the page */
+  .cost b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .rel { position: relative; }
+  .banner { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 8px 14px; border-bottom: 1px solid var(--border); font-size: 12px; }
+  .banner.err { color: var(--err); } .banner.warn { color: var(--warn); }
+  .banner:has(#keybox:not([hidden])) #banner-text { line-height: 24px; } #keybox { flex-basis: 100%; display: inline-flex; gap: 10px; align-items: center; }
+  .banner input { width: 220px; height: 24px; padding: 2px 8px; color: var(--text); }
+  .banner:has(+ .list:empty + .empty[hidden]) { border-bottom: 0; }
+  .embedded .bar:has(#gearbox[hidden]) { position: absolute; width: 1px; height: 1px; min-height: 0; padding: 0; border: 0; overflow: hidden; clip: rect(0 0 0 0); } /* keeps the h1 */
+  .embedded { scroll-padding-top: 64px; }
+  #banner-text { min-width: 0; overflow-wrap: anywhere; } #keybox { max-width: 100%; flex-wrap: wrap; } .banner input { min-width: 0; flex: 1 1 120px; max-width: 320px; }
+  .banner .btn { color: var(--text); padding: 2px 9px; }
+
+  .list { list-style: none; margin: 0; padding: 6px; }
+  .list:empty { padding: 0; }
+  .empty { margin: 0; padding: 14px; color: var(--muted); }
+  /* T3 Code's thread list: one 36px line per model, a second only when it needs attention. */
+  .row { display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; align-items: start; gap: 10px; min-height: 36px; padding: 6px 8px; border-radius: 6px; cursor: pointer; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+  .row:hover, .row:has(:focus-visible), .row.menu-open { background: var(--hover); }
+  .dot { width: 8px; height: 8px; margin-top: 8px; border-radius: 50%; border: 1.5px solid color-mix(in srgb, var(--gray) 60%, var(--text)); justify-self: center; } /* hollow: not running; 3:1 */
+  .dot.unk { border-style: dashed; }
+  .dot.run { background: color-mix(in srgb, var(--green) 75%, var(--text)); border-color: transparent; } .dot.start { background: var(--amber); border-color: var(--amber); animation: pulse 1.4s infinite; } .dot.fail { background: var(--red); border-color: var(--red); }
+  @keyframes pulse { 50% { opacity: .35; } }
+  @media (prefers-reduced-motion: reduce) { .dot.start { animation: none; } }
+  .line1 { display: flex; gap: 8px; align-items: center; min-width: 0; min-height: 24px; } .row { container-type: inline-size; }
+  /* The ID, then the facts, on one clipped line: the facts show whole or wrap out of view; the ID can't wrap (the empty
+     first item and a basis of at most the line keep it on the first line), and keeps ~24 characters beside the facts. */
+  .tail { display: flex; flex-wrap: wrap; align-items: center; flex: 1 1 0; min-width: 0; height: 16px; line-height: 16px; overflow: hidden; } .tail::before { content: ""; flex: 0 0 0; height: 16px; } /* a first line with height, so wrapped facts sit below it */
+  .tail > .idf { flex: 100 1 min(24ch, 100%) !important; max-width: max-content; } .tail > .meta:not(.idf) { flex: 0 0 auto; } .row.named .name { max-width: 55cqw; flex-shrink: 0; } /* a display name caps at a share of the row, not of what the time slot leaves, so it never re-truncates; the ID gives way */
+  .name { border-radius: 4px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 0; min-height: 24px; padding: 0; border: 0; background: none; text-align: left; cursor: pointer; }
+  .meta { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .idf { flex: 0 1 auto !important; } .idf:not([hidden]) + .meta { margin-left: 3px; } .idf:not([hidden]) + .meta::before { content: "· " / ""; } /* the dot goes with the facts, so a cut ID can't hide it */ /* the dot's spacing, not the gap's */
+  .meta.err { color: var(--err); } .meta.warn { color: var(--warn); }
+  .swap { min-width: 4.6em; } .row > div > div.meta { margin-right: calc(-4.6em - 10px); } /* the second line runs under the time slot */ /* room for Copied/Waking…/Sleeping…, so the facts don't slide or blink */
+  @keyframes again { from { background: color-mix(in srgb, currentColor 16%, transparent); } } .row.again > div > .meta { animation: again 1.2s ease-out; border-radius: 3px; width: fit-content; padding: 0 4px; margin-left: -4px; } /* the same problem, again */
+  /* The last-used time, replaced by the action on hover or focus. */
+  .swap { display: grid; justify-items: end; min-height: 24px; } .swap > * { grid-area: 1 / 1; align-self: center; }
+  .swap .t { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; pointer-events: none; }
+  .tog { position: relative; }
+  .tog { opacity: 0; pointer-events: none; }
+  .row:has(:focus-visible) .tog { opacity: 1; pointer-events: auto; } .row:has(:focus-visible) .t { opacity: 0; }
+  html.mouse .row:not(.noact):not(.copied):hover .tog { opacity: 1; pointer-events: auto; } html.mouse .row:not(.noact):not(.copied):hover .t { opacity: 0; } /* a mouse that moved: a tap's hover mustn't reveal Wake under the tap */
+  .row.noact .t, .row.copied .t { opacity: 1; } .row.copied .tog { opacity: 0; } .row.copied:has(.tog:focus-visible) .tog { opacity: 1; } .row.copied:has(.tog:focus-visible) .t { opacity: 0; }
+  @media (pointer: coarse) { .tog::after { content: ""; position: absolute; inset: -8px; } }
+
+  .menu, .pop, .results { background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow); }
+  .menu { position: fixed; z-index: 10; min-width: 170px; max-width: min(260px, calc(100vw - 16px)); padding: 4px; }
+  .menu button { display: block; width: 100%; overflow-wrap: anywhere; text-align: left; background: none; border: 0; padding: 6px 8px; border-radius: 5px; cursor: pointer; }
+  .menu button:hover { background: var(--hover); }
+  .menu button:focus-visible { background: var(--hover); outline: 2px solid var(--text); outline-offset: -2px; }
+  .menu .danger { color: var(--err); } .menu hr { border: 0; border-top: 1px solid var(--border); margin: 4px 0; }
+  .pop { position: absolute; z-index: 10; right: 0; top: calc(100% + 6px); width: 360px; padding: 12px; display: grid; grid-template-columns: 1fr 120px; gap: 10px 12px; align-items: center; }
+  .pop .msg { grid-column: 1 / -1; }
+  .pop > div { min-width: 0; } .pop .sub { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; } /* a status can't push the controls; whole in its tooltip */
+  .pop:has(> .msg:empty) { padding-bottom: 2px; }
+  .msg { font-size: 12px; } .msg.err { color: var(--err); } .msg.warn { color: var(--warn); }
+
+  dialog { width: min(680px, calc(100vw - 24px)); max-height: calc(100vh - 64px); margin: 48px auto auto; padding: 0; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); color: var(--text); box-shadow: var(--shadow); }
+  .embedded dialog { margin-top: 64px; max-height: calc(100vh - 76px); }
+  dialog::backdrop { background: rgba(0, 0, 0, .45); } [data-theme=dark] dialog::backdrop { background: rgba(0, 0, 0, .65); }
+  dialog form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; padding: 14px 14px 0; }
+  dialog form > * { min-width: 0; }
+  dialog form.held { grid-template-rows: auto auto 1fr; } dialog form.held > .foot { align-self: end; } /* held at its height while a repo is read: the footer stays at the bottom */
+  .dhead { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 8px; margin: -14px -14px -9px; padding: 14px 14px 9px; background: var(--panel); border-bottom: 1px solid transparent; } .scrolled .dhead { border-bottom-color: var(--border); /* a divider once content scrolls under it */ } .dhead h2 { font-size: 14px; margin: 0; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .results { margin-top: 4px; padding: 4px; box-shadow: none; }
+  #d-body[inert], #res.dim { opacity: .5; } #d-search { position: relative; } #d-search.over .results { position: absolute; left: 0; right: 0; z-index: 4; box-shadow: var(--shadow); max-height: 50vh; overflow: auto; } /* over the filled form, which stays */
+  .opt { display: flex; gap: 8px; align-items: baseline; padding: 6px 8px; border-radius: 5px; cursor: pointer; }
+  .opt[aria-selected=true] { background: var(--hover); } .opt[aria-selected=true] { box-shadow: inset 2px 0 0 var(--text); } /* not by tint alone */
+  .opt .id { font-family: var(--mono); font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .opt .r { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; min-width: 4.7em; text-align: right; }
+  .opt[aria-selected=true] .r { color: var(--text); }
+  .fields { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+  input, select { height: 32px; }
+  input { text-overflow: ellipsis; }
+  @media (pointer: coarse) { input, select, textarea { font-size: 16px; } } /* iOS zooms into smaller fields */
+  #f-think-box { align-self: end; }
+  .check { display: flex; gap: 6px; align-items: center; height: 32px; margin: 0; font-size: 13px; color: var(--text); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip:hover { border-color: var(--muted); color: var(--text); }
+  .chip { display: inline-flex; gap: 6px; align-items: center; padding: 3px 8px; font-size: 12px; color: var(--muted); border: 1px solid var(--field); border-radius: 6px; background: none; cursor: pointer; }
+  .chip[aria-pressed=true] { color: var(--text); background: var(--hover); border-color: var(--text); }
+  .chip[aria-pressed=true]:hover { background: color-mix(in srgb, var(--text) 13%, transparent); }
+  .chip.busy { border-style: dashed; } /* none free right now */
+  details > summary { cursor: pointer; color: var(--muted); font-size: 12px; width: max-content; min-height: 24px; display: flex; align-items: center; gap: 4px; }
+  details > summary::before, .more-link::before { content: ""; width: 5px; height: 5px; margin: 0 3px 0 1px; border: solid currentColor; border-width: 0 1.5px 1.5px 0; transform: rotate(-45deg); transition: transform .12s; }
+  details[open] > summary::before { transform: translate(1px, -2px) rotate(45deg); } details > summary::-webkit-details-marker { display: none; } details > summary { list-style: none; }
+  details[open] > summary { margin-bottom: 8px; }
+  .sec { display: grid; gap: 6px; margin-top: 12px; }
+  .link { min-height: 24px; background: none; border: 0; padding: 0; color: var(--muted); font-size: 12px; text-decoration: underline; cursor: pointer; justify-self: start; }
+  /* T3 Code's dialog footer: the message left, then Cancel and the primary button on the right. */
+  .foot { position: sticky; bottom: 0; z-index: 3; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 0 -14px; padding: 10px 14px 14px; background: var(--panel); border-top: 1px solid var(--border); }
+  .foot { justify-content: flex-end; }
+  .foot:has(#save[hidden]) { border-top: 0; padding-top: 0; }
+  .foot:has(#save[hidden]):has(.msg:empty) { padding-bottom: 2px; }
+  .foot .msg { flex: 1; min-width: 0; line-height: 18px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; } /* full text in its tooltip */
+  .foot .msg[tabindex] { cursor: pointer; border-radius: 4px; } .foot .msg[tabindex]:focus-visible { outline-offset: 3px; }
+  .foot .msg[tabindex]:focus::after { content: attr(data-full) / ""; position: absolute; left: 14px; right: 14px; bottom: calc(100% + 4px); padding: 8px 10px 0; background: var(--panel); border: 0 solid transparent; border-bottom-width: 8px; border-radius: 8px; box-shadow: 0 0 0 1px var(--border), 0 4px 16px rgb(0 0 0 / .18); white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: var(--lines, 12); overflow: hidden; } /* a cut-off message, whole over the form for keyboard and touch; the footer doesn't move */
+  .foot .msg:empty { min-height: 0; } /* kept in the page, so its first message is heard */
+  /* Errors clamp to 2 lines like the rest (full text in the tooltip), so the footer never grows. */
+  .foot > .btn { align-self: flex-start; margin-top: 4px; } /* level with a message's first line; a longer one grows below */
+  .foot #remove { margin: 4px auto 0 -6px; padding: 4px 6px; } /* its text lines up with the fields; its ring clears the edge */
+  .foot:not(:has(#save[hidden])) .msg { display: -webkit-box; min-height: 36px; align-content: center; } /* 2 lines reserved: the buttons never move */
+  dialog { scroll-padding: 56px 0 6rem; overflow-anchor: none; }
+  @media (max-height: 480px) { dialog { margin-top: 8px; max-height: calc(100vh - 16px); } #d-search .results, #d-search.over .results { max-height: 35vh; overflow: auto; } } /* 400% zoom: room for the header, a field and the footer */ /* clear of the sticky header and footer (the bottom follows the footer, in dMsg) */
+  input:focus-visible, select:focus-visible, textarea:focus-visible { outline-offset: -2px; } /* inset, so sticky parts can't cut it */
+  .link, details > summary { border-radius: 4px; } details > summary, .more-link { padding: 0 4px; margin-left: -4px; }
+  #f-why:empty { min-height: 1lh; } /* the line Hugging Face fills doesn't push the dialog down */
+  .chips .brk { flex-basis: 100%; height: 0; }
+  .btn:disabled, .icon:disabled { opacity: .5; cursor: default; }
+  #f-gpus[aria-invalid=true] .chip:not([data-more]) { border-color: var(--err); }
+  select { padding-left: 6px; }
+  .name { padding: 0 4px; margin: 0 -4px; } /* room for the focus ring */ .name:focus-visible { outline-offset: -1px; }
+  #f-gpus-l { margin-bottom: -3px; } /* 3px above its chips, like field labels */
+  .opt .id { white-space: normal; overflow-wrap: anywhere; } /* whole: the end of an id tells copies apart */
+  /* Rows at rest read quieter than running or starting ones, as T3 Code mutes settled threads. */
+  .row.rest .name { color: color-mix(in srgb, var(--text) 75%, var(--muted)); } .row.rest:hover .name, .row.rest:has(:focus-visible) .name { color: var(--text); }
+  [aria-invalid=true] { border-color: var(--err); } [aria-invalid=true]:focus-visible { outline-color: var(--err); }
+  summary:hover, .link:hover { color: var(--text); }
+  .more-link { text-decoration: none; display: flex; align-items: center; gap: 4px; } .more-link[aria-expanded=true] { margin-bottom: 8px; } .more-link[aria-expanded=true]::before { transform: translate(1px, -2px) rotate(45deg); } /* the same chevron as Advanced */
+  .wide { grid-column: span 2; } #f-id-box.full { grid-column: 1 / -1; }
+  #f-spec-json { margin-top: 10px; }
+  #f-why.warn { color: var(--warn); } #f-why.err { color: var(--err); } #f-why .link { color: inherit; }
+  /* Narrow: rows keep one line, facts cut off; the popover spans the bar. */
+  @media (max-width: 600px) {
+
+    .bar h1 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); } /* the cost stays on the line */
+    .bar:has(#gearbox[hidden]) { position: absolute; width: 1px; height: 1px; min-height: 0; padding: 0; border: 0; overflow: hidden; clip: rect(0 0 0 0); }
+    .rel { position: static; } .bar .pop { left: 8px; right: 8px; width: auto; }
+    .fields { grid-template-columns: repeat(2, minmax(0, 1fr)); } /* labels like "Speculative decoding" fit on one line */
   }
-  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
-  input.attn { outline: 2px solid var(--red); border-color: transparent; }
-  .keybox { width: 260px; }
-  .keybox.hidden { display: none; }
-  button {
-    background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 6px;
-    padding: 6px 12px; font: inherit; cursor: pointer;
+  @media (max-width: 420px) {
+    .bar .pop { grid-template-columns: 1fr; gap: 4px 12px; } .bar .pop > input, .bar .pop > select { margin-bottom: 8px; } .bar .pop > select:last-of-type { margin-bottom: 0; } /* each setting stacked: its status gets the full width */
+    .foot { flex-wrap: nowrap; } #cancel { display: none; } /* ✕, Esc and the backdrop close it */
   }
-  button:hover:not(:disabled) { border-color: var(--muted); }
-  button:disabled { opacity: .4; cursor: not-allowed; }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
-  button.primary:hover:not(:disabled) { background: var(--accent-h); border-color: var(--accent-h); }
-  button.danger { color: var(--red); }
-  button.danger:hover:not(:disabled) { border-color: var(--red); }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px 14px; }
-  .check { display: flex; align-items: center; gap: 8px; padding-top: 22px; }
-  .check input { width: auto; }
-  .check label { margin: 0; color: var(--text); font-size: 13px; }
-  .note { margin: 0 0 14px; padding: 8px 12px; border-left: 3px solid var(--amber); background: color-mix(in srgb, var(--amber) 8%, transparent); color: var(--text); font-size: 13px; border-radius: 0 6px 6px 0; }
-  .msg { margin-top: 10px; font-size: 13px; min-height: 18px; }
-  .msg.ok { color: var(--green); } .msg.err { color: var(--red); }
-  .banner { padding: 10px 14px; border-radius: 6px; background: color-mix(in srgb, var(--red) 12%, transparent); border: 1px solid var(--red); color: var(--red); display: none; }
-  .banner.show { display: block; }
-  .tablewrap { overflow-x: auto; }
-  table { width: 100%; border-collapse: collapse; }
-  th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; padding: 8px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
-  td { padding: 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
-  tr:last-child td { border-bottom: none; }
-  td.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; }
-  .muted { color: var(--muted); }
-  .badge { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; border: 1px solid; white-space: nowrap; }
-  .badge.green { color: var(--green); border-color: color-mix(in srgb, var(--green) 40%, transparent); background: color-mix(in srgb, var(--green) 10%, transparent); }
-  .badge.amber { color: var(--amber); border-color: color-mix(in srgb, var(--amber) 40%, transparent); background: color-mix(in srgb, var(--amber) 10%, transparent); }
-  .badge.red { color: var(--red); border-color: color-mix(in srgb, var(--red) 40%, transparent); background: color-mix(in srgb, var(--red) 10%, transparent); }
-  .badge.gray { color: var(--gray); border-color: color-mix(in srgb, var(--gray) 40%, transparent); background: color-mix(in srgb, var(--gray) 10%, transparent); }
-  .actions { display: flex; gap: 6px; white-space: nowrap; }
-  .empty { padding: 28px; text-align: center; color: var(--muted); }
-  .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 12px; flex-wrap: wrap; }
-  .toolbar h2 { margin: 0; }
-  .row-err { color: var(--red); font-size: 12px; margin-top: 2px; max-width: 320px; }
-  .gpus { grid-column: 1 / -1; }
-  .gpu-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 4px 14px; }
-  .gpu-list label { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--text); font-size: 13px; cursor: pointer; }
-  .gpu-list input { width: auto; margin: 0; }
-  input[readonly] { color: var(--muted); }
+  @media (forced-colors: active) {
+    .dot, .dot.run, .dot.start, .dot.fail { forced-color-adjust: none; border-color: CanvasText; } /* visible on either system background */
+    .chip[aria-pressed=true] { outline: 2px solid CanvasText; }
+    .menu button:focus, .opt[aria-selected=true] { outline: 2px solid Highlight; }
+  }
 </style>
 </head>
 <body>
-<header>
-  <div>
-    <h1>DeepInfra Autoscale</h1>
-    <div class="sub">Self-hosted model management</div>
-  </div>
-  <div class="head-right">
-    <div class="keybox" id="keybox">
-      <label for="key">Management key</label>
-      <input id="key" type="password" autocomplete="off" placeholder="Bearer token" spellcheck="false">
-    </div>
-    <div class="cost">
-      <div class="sub">Running now (est.)</div>
-      <b id="cost">$0.00</b><span class="sub">/hr</span>
-    </div>
-  </div>
-</header>
-
-<main>
-  <div id="banner" class="banner" role="alert"></div>
-
-  <section>
-    <div class="toolbar">
-      <h2>Models</h2>
-      <div style="display:flex;align-items:center;gap:12px">
-        <span class="sub" id="meta"></span>
-        <button id="refresh" type="button">Refresh</button>
-      </div>
-    </div>
-    <div class="tablewrap" id="list"></div>
-  </section>
-
-  <section>
-    <h2>Settings</h2>
-    <form id="settings" autocomplete="off">
-      <div class="grid">
-        <div><label for="s-key">DeepInfra API key</label><input id="s-key" type="password" autocomplete="new-password" spellcheck="false" placeholder="Not set"></div>
-        <div><label for="s-idle">Scale to zero after idle (minutes)</label><input id="s-idle" type="text" inputmode="numeric" placeholder="30"></div>
-      </div>
-      <div style="margin-top:14px;display:flex;align-items:center;gap:12px">
-        <button class="primary" id="s-save" type="submit">Save settings</button>
-        <span id="s-msg" class="msg" style="margin:0"></span>
-      </div>
-    </form>
-  </section>
-
-  <section>
-    <h2 id="form-title">Add model</h2>
-    <p class="note">Creating a model provisions GPUs on DeepInfra and bills while running; models scale to zero after the idle window.</p>
-    <form id="form" autocomplete="off">
-      <div class="grid">
-        <div><label for="f-id">Model id *</label><input id="f-id" type="text" required placeholder="red-snow-5.3-flash"></div>
-        <div><label for="f-name">Name in Claude Code</label><input id="f-name" type="text" maxlength="64" placeholder="RED-SNOW 5.3 Flash"></div>
-        <div><label for="f-repo">HF repo *</label><input id="f-repo" type="text" required placeholder="Blackfrost-AI/RED-SNOW-5.3-FLASH-NVFP4"></div>
-        <div><label for="f-rev">Revision (commit sha)</label><input id="f-rev" type="text" placeholder="optional"></div>
-        <div><label for="f-ctx">Context length *</label><input id="f-ctx" type="text" required placeholder="1M, 256k or 1048576"></div>
-        <div><label for="f-quant">Quantization</label><input id="f-quant" type="text" placeholder="fp8"></div>
-        <div><label for="f-tool">Tool parser</label><input id="f-tool" type="text" placeholder="glm47"></div>
-        <div><label for="f-reason">Reasoning parser</label><input id="f-reason" type="text" placeholder="glm45"></div>
-        <div class="check"><input id="f-think" type="checkbox"><label for="f-think">Enable thinking</label></div>
-        <div><label for="f-gen">Default sampling (JSON)</label><input id="f-gen" type="text" placeholder='{"presence_penalty":1.5}'></div>
-        <div><label for="f-guard">Loop guard</label><select id="f-guard"><option value="off">Off</option><option value="on">On: cut loops and ask the model to finish</option><option value="observe">Observe: log loops only</option></select></div>
-        <div><label for="f-spec">Speculative decoding (JSON)</label><input id="f-spec" type="text" placeholder='{"method":"dflash","model":"Owner/Draft","num_speculative_tokens":8}'></div>
-        <div class="gpus">
-          <label>GPUs * (it runs on the cheapest one DeepInfra has free, and moves down the list when one fails)</label>
-          <div class="gpu-list" id="f-gpus"><span class="muted">Loading...</span></div>
+<main class="wrap">
+  <div class="app">
+    <div class="bar">
+      <h1>DeepInfra Autoscale</h1>
+      <span class="grow"></span>
+      <span class="cost sub" id="cost" hidden></span>
+      <span class="rel" id="gearbox" style="visibility:hidden">
+        <button class="icon" id="gear" type="button" title="Settings" aria-expanded="false" aria-controls="settings"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
+        <div class="pop" id="settings" role="group" aria-label="Settings" hidden>
+          <div><div>DeepInfra API key</div><div class="sub" id="s-key-help"></div></div>
+          <input id="s-key" type="password" autocomplete="off" spellcheck="false" placeholder="Paste, Enter" aria-label="DeepInfra API key" aria-describedby="s-key-help">
+          <div><div>Stop after idle</div><div class="sub" id="s-idle-help">Since the last request.</div></div>
+          <select id="s-idle" aria-label="Stop after idle" aria-describedby="s-idle-help"></select>
+          <div class="sr" id="s-msg" role="status"></div>
         </div>
-      </div>
-      <p class="note" id="edit-note" style="display:none;margin:14px 0 0">Changing anything but the name, loop guard or GPU list deletes the model's deployment; the next request provisions a new one (~12 min cold start).</p>
-      <div style="margin-top:14px;display:flex;align-items:center;gap:12px">
-        <button class="primary" id="submit" type="submit">Add model</button>
-        <button id="cancel" type="button" style="display:none">Cancel</button>
-        <span id="formmsg" class="msg" style="margin:0"></span>
-      </div>
-    </form>
-  </section>
+      </span>
+      <button class="btn primary" id="add" type="button" style="visibility:hidden">Add model</button>
+    </div>
+    <div class="banner" id="banner" hidden>
+      <span id="banner-text" role="alert"></span>
+      <button class="btn" id="banner-act" type="button" hidden>Send anyway</button>
+      <span id="keybox" hidden><input id="key" type="password" autocomplete="off" spellcheck="false" aria-label="Management key"><button class="btn" id="key-use" style="min-width: 84px" type="button">Use key</button></span>
+    </div>
+    <ul class="list" id="list" aria-label="Models (right-click, long-press or Shift+F10 for more)"></ul>
+    <p class="empty" id="empty">Loading…</p>
+  </div>
+  <div id="menuhost"></div>
+  <div class="sr" id="announce" role="status" aria-atomic="false"></div>
 </main>
+
+<dialog id="dlg" aria-labelledby="d-title" aria-describedby="f-why d-msg">
+  <form id="form" method="dialog" autocomplete="off" novalidate>
+    <div class="dhead"><h2 id="d-title">Add model</h2><button class="icon" type="button" id="d-x" title="Close"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+    <div id="d-search">
+      <input id="q" type="text" placeholder="Search Hugging Face, e.g. qwen3 coder" role="combobox" aria-label="Hugging Face repo" aria-expanded="false" aria-controls="res" aria-autocomplete="list" spellcheck="false">
+      <div class="results" id="res" role="listbox" aria-label="Repos" hidden></div>
+    </div>
+    <div id="d-body" hidden>
+      <div class="fields">
+        <div id="f-id-box" class="wide"><label for="f-id">Model ID · use in /model and API calls</label><input id="f-id" type="text" spellcheck="false"></div>
+        <div><label for="f-ctx">Context</label><select id="f-ctx"></select></div>
+        <div id="f-think-box"><label class="check"><input id="f-think" type="checkbox"> Thinking</label></div>
+      </div>
+      <div class="sec">
+        <div class="sub" id="f-gpus-l" title="Starts on the cheapest selected GPU that's free">GPUs<span class="sr"> (starts on the cheapest selected one that's free)</span></div>
+        <div class="chips" id="f-gpus" role="group" aria-labelledby="f-gpus-l" aria-describedby="f-why"></div>
+        <div class="sub" id="f-why"></div>
+      </div>
+      <details class="sec" id="adv">
+        <summary>Advanced</summary>
+        <div class="fields">
+          <div id="f-repo-box" class="wide"><label for="f-repo">Hugging Face repo</label><input id="f-repo" type="text" spellcheck="false"></div>
+          <div><label for="f-name">Display name</label><input id="f-name" type="text" maxlength="64"></div>
+          <div><label for="f-rev">Revision</label><input id="f-rev" type="text" spellcheck="false" placeholder="latest"></div>
+          <div><label for="f-tool">Tool parser</label><input id="f-tool" type="text" spellcheck="false" placeholder="off" list="tool-parsers"></div>
+          <div><label for="f-reason">Reasoning parser</label><input id="f-reason" type="text" spellcheck="false" placeholder="off" list="reason-parsers"></div>
+
+          <div><label for="f-quant">Quantization</label><select id="f-quant"></select></div>
+          <div><label for="f-guard">Loop guard</label><select id="f-guard"><option value="off">Off</option><option value="on">On</option><option value="observe" title="Log loops only">Observe</option></select></div>
+          <div><label for="f-spec">Speculative decoding</label><select id="f-spec"></select></div>
+          <div id="f-spec-n-box"><label for="f-spec-n">Tokens per step</label><input id="f-spec-n" type="number" min="1" max="16"></div>
+          <div id="f-draft-box" class="wide"><label for="f-draft">Draft repo</label><input id="f-draft" type="text" list="f-drafts" spellcheck="false" placeholder="Owner/Draft-Model"><datalist id="f-drafts"></datalist><datalist id="tool-parsers"></datalist><datalist id="reason-parsers"></datalist></div>
+          <div id="f-method-box" hidden><label for="f-method">Method</label><select id="f-method"><option>eagle3</option><option>eagle</option><option>dflash</option><option>dspark</option><option>mtp</option><option>draft_model</option></select></div>
+        </div>
+        <textarea id="f-spec-json" rows="2" aria-label="Speculative config JSON" placeholder='{"method": "eagle3", "model": "Owner/Draft"}'></textarea>
+        <div class="sec">
+          <div class="sr" id="f-samp-l"></div>
+          <button type="button" class="link more-link" id="f-samp-more" aria-expanded="false" aria-controls="f-samp">Sampling</button>
+          <div class="fields" id="f-samp" role="group" aria-labelledby="f-samp-l"></div>
+        </div>
+      </details>
+    </div>
+    <div class="foot" id="foot">
+      <button class="btn danger" id="remove" type="button" hidden>Remove</button>
+      <span class="msg" id="d-msg" role="status"></span>
+      <button class="btn ghost" id="cancel" type="button">Cancel</button>
+      <button class="btn primary" id="save" type="submit">Add model</button>
+    </div>
+  </form>
+</dialog>
 
 <script>
 (function () {
   "use strict";
   var API = "/v0/management/deepinfra-autoscale";
-  var KEY_NAME = "cpa_mgmt_key";
+  var CONFIG = "/v8/management/config/plugins/configs/deepinfra-autoscale", CONFIG_ALL = "/v8/management/config";
+  var KEY_NAME = "cpa_mgmt_key", REJECTED_NAME = "cpa_mgmt_key_rejected";
+  var STARTING = /^(deploying|downloading|initializing)$/;
+  var STAGE = { deploying: "Deploying", downloading: "Downloading", initializing: "Loading" };
+  var KNOWN = /^(running|scaled-to-zero|failed|deploying|downloading|initializing)$/;
+  var HF = "https://huggingface.co";
   var $ = function (id) { return document.getElementById(id); };
-  var keyInput = $("key");
-  var state = { models: [], gpus: [], idle: null, busy: {}, rowErr: {}, editing: null };
-  var gpuSig = "";
+  var S = { models: [], gpus: [], idle: null, apiKeySet: null, diErr: "", loaded: false, loadErr: null, busy: {}, note: {} };
+  var IC = {
+    wake: '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4v16l13-8z" fill="currentColor"/></svg>',
+    sleep: '<svg width="14" height="14" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor"/></svg>'
+  };
 
   if (window.self !== window.top) document.documentElement.classList.add("embedded");
   syncTheme();
-  // Reuse the panel's login when it was saved with "Remember password"; otherwise ask once.
-  var fromPanel = panelKey();
-  if (fromPanel) {
-    keyInput.value = fromPanel;
-    $("keybox").classList.add("hidden");
-  } else {
-    try { keyInput.value = localStorage.getItem(KEY_NAME) || ""; } catch (e) {}
+
+  function syncTheme() {
+    var root = document.documentElement, panel = null;
+    try { panel = window.self !== window.top ? window.parent.document.documentElement : null; } catch (e) {}
+    if (panel) {
+      var copy = function () {
+        var theme = panel.getAttribute("data-theme");
+        if (theme) root.setAttribute("data-theme", theme); else root.removeAttribute("data-theme");
+      };
+      copy();
+      new MutationObserver(copy).observe(panel, { attributes: true, attributeFilter: ["data-theme"] });
+      return;
+    }
+    var dark = window.matchMedia("(prefers-color-scheme: dark)");
+    var follow = function () { root.setAttribute("data-theme", dark.matches ? "dark" : "white"); }; // the panel's "auto" theme
+    follow();
+    dark.addEventListener("change", follow);
+  }
+
+  function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return "&#" + c.charCodeAt(0) + ";"; }); }
+  var byKey = true; // the last input was the keyboard
+  document.addEventListener("pointerdown", function () { byKey = false; }, true);
+  // The last pointer was a touch: rows keep the time and the menu has Wake/Sleep, whatever the device says.
+  // A mouse counts once it presses or really moves: the browser's own hover updates after a tap come as a still mouse.
+  ["pointerover", "pointerdown", "pointermove"].forEach(function (t) { document.addEventListener(t, function (e) {
+    var c = document.documentElement.classList;
+    if (e.pointerType === "touch") { c.add("touch"); c.remove("mouse"); }
+    else if (t === "pointerdown" || t === "pointermove" && (e.movementX || e.movementY)) { c.remove("touch"); c.add("mouse"); }
+  }, true); });
+  function touchy() { return document.documentElement.classList.contains("touch") || matchMedia("(hover: none)").matches; }
+  document.addEventListener("keydown", function () { byKey = true; }, true);
+  // focusQuiet moves focus for the keyboard's sake, without a ring when the mouse started it.
+  function focusQuiet(n) { n.focus({ preventScroll: true, focusVisible: byKey }); }
+  function el(tag, cls) { var n = document.createElement(tag); if (cls) n.className = cls; return n; }
+  // set writes a property only on change, so unchanged text isn't re-announced.
+  function set(n, prop, v) { if (n[prop] !== v) n[prop] = v; }
+  function stored(name) { try { return localStorage.getItem(name) || ""; } catch (e) { return ""; } }
+  function store(name, v) { try { if (v == null) localStorage.removeItem(name); else localStorage.setItem(name, v); } catch (e) {} }
+  var annT = 0;
+  function announce(t) { // within a second of the last, added as its own line: said without repeating the last, not cutting it off
+    var a = $("announce");
+    if (!annT) a.textContent = "";
+    else if (Array.prototype.some.call(a.children, function (n) { return n.textContent === t + " "; })) return; // an exact repeat only
+    a.appendChild(document.createElement("span")).textContent = t + " ";
+    clearTimeout(annT); annT = setTimeout(function () { annT = 0; }, 1000);
+  }
+  function money(n) { return "$" + (Number(n) || 0).toFixed(2); }
+  function short(g) { return String(g || "").replace(/-\d+GB$/, ""); }
+  function clock(ms) { return new Date(ms + 59999).toTimeString().slice(0, 5); }
+  function byId(a, b) { return a.id < b.id ? -1 : a.id > b.id ? 1 : 0; }
+  function lower(s) { return /^[A-Z][a-z]/.test(s) && !/^(DeepInfra|Hugging)/.test(s) ? s.charAt(0).toLowerCase() + s.slice(1) : s; }
+  // fmtCtx uses k = 1024 and M = 1048576; other values show in full.
+  function fmtCtx(n) {
+    n = Number(n);
+    return !(n > 0) ? "?" : n % 1000 === 0 ? n.toLocaleString("en-US") : n % 1048576 === 0 ? n / 1048576 + "M" : n % 1024 === 0 ? n / 1024 + "k" : n.toLocaleString("en-US");
+  }
+  function ctxName(n) { return n % 1024 === 0 ? fmtCtx(n) : n % 1000 === 0 ? n / 1000 + "k" : "~" + Math.round(n / 1024) + "k"; } // a repo's own maximum, short
+  function ago(unix) {
+    var s = Date.now() / 1000 - Number(unix);
+    return !(unix > 0) ? "" : s < 60 ? "now" : s < 3600 ? Math.round(s / 60) + "m" : s < 86400 ? Math.floor(s / 3600) + "h" : Math.floor(s / 86400) + "d";
   }
 
   // panelKey decodes the management key the panel saves in localStorage (same origin). The panel
@@ -199,472 +390,1652 @@
       var v1 = raw.indexOf("enc::v1::") === 0;
       if (v1 || raw.indexOf("enc::v2::") === 0) {
         var secret = new TextEncoder().encode("cli-proxy-api-webui::secure-storage|" + location.host + (v1 ? "|" + navigator.userAgent : ""));
-        var bytes = atob(raw.slice(9));
-        var out = new Uint8Array(bytes.length);
+        var bytes = atob(raw.slice(9)), out = new Uint8Array(bytes.length);
         for (var i = 0; i < bytes.length; i++) out[i] = bytes.charCodeAt(i) ^ secret[i % secret.length];
         raw = new TextDecoder().decode(out);
       }
       var auth = JSON.parse(raw);
-      return (auth && auth.state && typeof auth.state.managementKey === "string") ? auth.state.managementKey : "";
+      return auth && auth.state && typeof auth.state.managementKey === "string" ? auth.state.managementKey.trim() : "";
     } catch (e) {
       return "";
     }
   }
 
-  function syncTheme() {
-    var root = document.documentElement;
-    var panel = null;
-    try { panel = window.self !== window.top ? window.parent.document.documentElement : null; } catch (e) {}
-    if (panel) {
-      var copy = function () {
-        var theme = panel.getAttribute("data-theme");
-        if (theme) root.setAttribute("data-theme", theme); else root.removeAttribute("data-theme");
-      };
-      copy();
-      new MutationObserver(copy).observe(panel, { attributes: true, attributeFilter: ["data-theme"] });
-      return;
-    }
-    var dark = window.matchMedia("(prefers-color-scheme: dark)");
-    var follow = function () {
-      root.setAttribute("data-theme", dark.matches ? "dark" : "white"); // the panel's "auto" theme
-    };
-    follow();
-    dark.addEventListener("change", follow);
-  }
-
-  function el(tag, cls, text) {
-    var n = document.createElement(tag);
-    if (cls) n.className = cls;
-    if (text != null) n.textContent = text;
-    return n;
-  }
-
-  function showBanner(text) {
-    var b = $("banner");
-    b.textContent = text || "";
-    b.classList.toggle("show", !!text);
-  }
-
+  /* ---------- management key ---------- */
   // WARNING: CPA bans the client IP for 30 minutes after 5 rejected management keys, and behind a
-  // proxy that is every client. Never send an empty key, and stop sending a rejected one until
-  // the field changes.
-  var keyRejected = false;
-  function keyBlocked() {
-    if (keyInput.value.trim() !== "" && !keyRejected) return null;
-    authFail();
-    var e = new Error("Management key required or invalid");
-    e.auth = true;
-    return e;
+  // proxy that is every client. Never send an empty or half-typed key (a typed key is used only on
+  // Enter or Use key), save a typed key only once it's accepted, and remember every rejected key
+  // (as a hash, the panel login's too, shared with other tabs) so it's never sent again by itself.
+  var sentKey = "", keyFrom = "", verified = "", checking = null, headerLost = false, banUntil = 0, rejectedNote = "";
+  function keyHash(s) { // FNV-1a
+    for (var h = 0x811c9dc5, i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
+    return (h >>> 0).toString(36);
   }
-
-  function authFail() {
-    $("keybox").classList.remove("hidden");
-    var has = keyInput.value.trim() !== "";
-    showBanner(has
-      ? "Management key rejected. Fix it above; nothing is sent until it changes."
-      : "Enter the management key above.");
-    keyInput.classList.add("attn");
-    keyInput.focus();
+  function rejected() { try { var a = JSON.parse(stored(REJECTED_NAME) || "[]"); return Array.isArray(a) ? a : []; } catch (e) { return []; } }
+  function isRejected(k) { return rejected().indexOf(keyHash(k)) >= 0; }
+  // pickKey uses the panel's login unless it was rejected, else the last accepted typed key.
+  function okKey(k) { return /^[\x21-\x7e]+$/.test(k); } // what a browser can send in a header
+  function pickKey() {
+    var panel = panelKey(), saved = stored(KEY_NAME).trim();
+    if (!okKey(panel)) panel = "";
+    if (!okKey(saved)) saved = "";
+    if (panel && !isRejected(panel)) { sentKey = panel; keyFrom = "panel"; }
+    else if (saved && !isRejected(saved)) { sentKey = saved; keyFrom = "typed"; }
+    else { sentKey = ""; keyFrom = ""; if (panel && !rejectedNote) rejectedNote = "Your panel login was rejected"; }
   }
-
-  function api(method, path, body) {
-    var blocked = keyBlocked();
-    if (blocked) return Promise.reject(blocked);
-    var headers = { "Authorization": "Bearer " + keyInput.value.trim() };
-    var opts = { method: method, headers: headers };
-    if (body !== undefined) {
-      headers["Content-Type"] = "application/json";
-      opts.body = JSON.stringify(body);
+  function dropKey(k) {
+    if (!isRejected(k)) store(REJECTED_NAME, JSON.stringify(rejected().concat(keyHash(k)).slice(-20)));
+    if (stored(KEY_NAME) === k) store(KEY_NAME, null);
+    if (verified === k) verified = "";
+    if (k !== sentKey) return;
+    rejectedNote = keyFrom === "panel" ? "Your panel login was rejected" : "That key was rejected";
+    pickKey();
+    $("banner-text").textContent = ""; // so the same text is announced again
+    if ($("key").value.trim() === k) $("key").value = ""; // what's typed next can't be added to it
+    setTimeout(function () { render(); if (!sentKey) $("key").focus(); }); // after the caller's own message
+  }
+  function keyAccepted(k) {
+    if (k !== sentKey || verified === k) return;
+    verified = k;
+    setTimeout(render); // "Loading…" until the list comes
+    if (sNote && /management key/i.test(sNote.tip || sNote.text)) sMsg("Not saved; retry.", "err"); // the key it blamed is fixed
+    var said = typedNow === k; if (said) typedNow = "";
+    if (draft) setTimeout(function () { if (draft === "add") openAdd(); else openEdit(draft); if (said) announce("Key accepted."); }); // the save a rejected key interrupted; said once it's open
+    rejectedNote = "";
+    if (keyFrom === "typed") store(KEY_NAME, k);
+    if (said && !draft) announce("Key accepted."); // not for a stored key on load
+  }
+  window.addEventListener("storage", function (e) {
+    if (e.key !== REJECTED_NAME && e.key !== KEY_NAME && e.key !== "cli-proxy-auth") return;
+    var was = sentKey;
+    if (sentKey && isRejected(sentKey)) dropKey(sentKey); else if (!sentKey) pickKey();
+    if (sentKey !== was) { render(); if (sentKey) start(); }
+  });
+  var typedNow = ""; // a key typed in this session, until it's accepted
+  var refused = ""; // a key not sent because it was rejected before; "Send anyway" sends it
+  function useKey(force) {
+    var v = $("key").value.trim() || (force ? refused : "");
+    if (!v) return $("key").focus();
+    // A refused key is cleared from the box, so what's typed next can't be added to it (and sent with it).
+    if (!okKey(v)) { $("key").value = ""; $("banner-text").textContent = ""; return showBanner("Key has spaces; paste it again.", "err", "key"); } // the browser can't send it
+    if (isRejected(v)) {
+      if (!force || !confirm("Rejected before; 5 rejections ban this IP for 30 min. Send anyway?")) { refused = v; $("key").value = ""; $("banner-text").textContent = ""; return setTimeout(function () { showBanner("Rejected before; enter another:", "err", "key", "Send anyway"); }); } // a tick later, so it's said again
+      store(REJECTED_NAME, JSON.stringify(rejected().filter(function (h) { return h !== keyHash(v); })));
     }
-    return fetch(API + path, opts).then(function (res) {
-      return res.text().then(function (txt) {
-        var data = null;
-        try { data = txt ? JSON.parse(txt) : null; } catch (e) {}
-        if (res.status === 401) {
-          keyRejected = true;
-          authFail();
-          var e401 = new Error("Management key required or invalid");
-          e401.auth = true;
-          throw e401;
-        }
-        if (!res.ok || (data && data.error)) {
-          throw new Error((data && data.error) || ("HTTP " + res.status + (txt && !data ? ": " + txt.slice(0, 200) : "")));
-        }
-        return data || {};
-      });
+    sentKey = v; keyFrom = "typed"; typedNow = v; headerLost = false; rejectedNote = "";
+    $("key-use").setAttribute("aria-busy", "true");
+    $("key").readOnly = true; // typing now would build on a key that may be rejected
+    if (document.activeElement === $("banner-act")) $("key").focus({ preventScroll: true }); // focus stays in the key box, which moves it on
+    $("banner-act").hidden = true; // the old line's Send anyway
+    $("banner-text").removeAttribute("role"); // not said: it's the prompt just answered
+    announce("Checking the key…");
+    set($("banner"), "className", "banner"); set($("banner-text"), "textContent", "Enter the management key:"); // not the last rejection while this one is checked
+    $("key-use").textContent = "Checking…";
+    refused = "";
+    S.loadErr = null; // not the previous key's error
+    render(); // "Loading…" in the list
+    start();
+  }
+  $("key").addEventListener("keydown", function (e) { if (e.key === "Enter") useKey(false); });
+  $("key-use").addEventListener("click", function () { useKey(false); });
+
+  /* ---------- API ---------- */
+  // A key not yet accepted is checked by one request at a time, the quick settings GET (CPA answers
+  // a wrong key at once), and the other requests wait on it, so a wrong key costs one rejection.
+  // Every change to the models or settings bumps mutTick when it finishes, and load drops a GET
+  // /models that started before it.
+  var tick = 0, mutTick = 0;
+  var NO_HEADER = "Proxy drops the key; fix it, then reload.";
+  function fail(kind, msg) { var e = new Error(msg); e.kind = kind; return e; }
+  function request(url, method, body) {
+    if (sentKey && isRejected(sentKey)) dropKey(sentKey); // another tab had it rejected
+    if (!sentKey) return Promise.reject(fail("key", "No management key"));
+    if (headerLost) return Promise.reject(fail("hdr", NO_HEADER));
+    if (sentKey === verified) return send(url, method, body);
+    var key = sentKey, probe = url === CONFIG && method === "GET";
+    if (!checking) {
+      checking = send(CONFIG, "GET");
+      checking.then(function () { checking = null; }, function () { checking = null; });
+      if (probe) return checking;
+    }
+    return checking.then(function () { return request(url, method, body); }, function (e) {
+      if (sentKey && sentKey !== key) return request(url, method, body);
+      throw e;
     });
   }
+  function send(url, method, body) {
+    var key = sentKey, mut = method !== "GET" && url !== CONFIG_ALL, secs = method !== "GET" ? 60 : 20, ctl = new AbortController();
+    var opts = { method: method, headers: { "Authorization": "Bearer " + key }, signal: ctl.signal };
+    if (body !== undefined) { opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
+    var timer = setTimeout(function () { ctl.abort(); }, secs * 1000);
+    return fetch(url, opts).then(function (res) {
+      return res.text().then(function (txt) { return [res, txt]; });
+    }).then(function (r) {
+      var res = r[0], txt = r[1], data = null;
+      clearTimeout(timer);
+      if (mut) mutTick = ++tick;
+      try { data = txt ? JSON.parse(txt) : null; } catch (e) {}
+      var why = res.status === 401 && data && data.error;
+      // The page never sends an empty key, so "missing" means a proxy dropped the header.
+      if (why === "missing management key") { headerLost = true; throw fail("hdr", NO_HEADER); }
+      // Only CPA's own key check counts as a rejection (handler.go: "missing/invalid management key").
+      if (why && /^(invalid|missing or invalid) management key$/.test(why)) { dropKey(key); throw fail("key", "Management key rejected"); }
+      if (res.status === 403 && data && /^IP banned/.test(data.error)) {
+        var m = /in (?:(\d+)h)?(?:(\d+)m)?(\d+)s/.exec(data.error);
+        banUntil = m ? Date.now() + ((+m[1] || 0) * 3600 + (+m[2] || 0) * 60 + +m[3]) * 1000 : 0;
+        // A typed key the ban answered was never checked: back to the box, sent again only on Enter.
+        if (key !== verified && keyFrom === "typed" && key === sentKey) { sentKey = ""; keyFrom = ""; $("key").value = key; }
+        throw fail("ban", "IP banned for rejected keys" + (banUntil ? "; wait until " + clock(banUntil) : "; wait 30 min") + ".");
+      }
+      // A 2xx that isn't a JSON object (e.g. a login proxy's page) is no data, not empty data.
+      if (res.ok && txt && !(data && typeof data === "object")) throw fail("", "Unexpected reply; reload the panel");
+      // CPA checks the key before any handler runs, so any other JSON reply means it took the key.
+      if (res.ok || (data && typeof data === "object" && res.status !== 401 && res.status !== 403)) keyAccepted(key);
+      if (!res.ok || (data && data.error)) {
+        var e = new Error(data && data.error ? data.error : "HTTP " + res.status + " " + res.statusText);
+        e.status = res.status;
+        e.net = (res.status === 502 && !(data && data.error)) || res.status === 504; // a proxy's: it may have gone through
+        throw e;
+      }
+      return data || {};
+    }, function () {
+      clearTimeout(timer);
+      if (mut) mutTick = ++tick; // it may have landed
+      var e = fail("net", ctl.signal.aborted ? "CLIProxyAPI didn't answer in " + secs + " s" : "Can't reach CLIProxyAPI");
+      e.net = true;
+      throw e;
+    });
+  }
+  function api(method, path, body) { return request(API + path, method, body); }
 
-  // After the model set changes (add/remove), trigger a CPA config reload so the models are
-  // re-pulled into /v1/models (and thus Claude Code's model picker). This writes a changing nonce
-  // under this plugin's own config block via CPA's config API, which saves preserving comments and
-  // reloads. Best-effort: a failure just means the picker refreshes on the next CPA reload.
+  // syncModels makes CPA reload its config, which re-pulls the models into /v1/models (Claude Code's
+  // /model picker), by writing a changing nonce under this plugin's config. Best-effort.
   function syncModels() {
-    if (keyBlocked()) return Promise.resolve();
-    return fetch("/v8/management/config", {
-      method: "PATCH",
-      headers: { "Authorization": "Bearer " + keyInput.value.trim(), "Content-Type": "application/json" },
-      body: JSON.stringify({ plugins: { configs: { "deepinfra-autoscale": { "sync-nonce": Date.now() } } } })
-    }).catch(function () {});
+    return request(CONFIG_ALL, "PATCH", { plugins: { configs: { "deepinfra-autoscale": { "sync-nonce": Date.now() } } } })
+      .then(function () { return ""; }, function (e) { return e.message; });
   }
 
-  /* ---------- formatting ---------- */
-  function fmtContext(n) {
-    n = Number(n);
-    if (!isFinite(n) || n <= 0) return "-";
-    if (n % 1048576 === 0) return (n / 1048576) + "M";
-    if (n % 1024 === 0) return (n / 1024) + "k";
-    if (n >= 1000) return (n / 1000).toFixed(n % 1000 ? 1 : 0) + "k";
-    return String(n);
+  // errText turns an error into one short sentence that says what to do; the raw text goes in a tooltip.
+  function errText(e) {
+    var msg = String(e && e.message != null ? e.message : e || "").replace(/\.$/, "");
+    if (e && e.net) return "No reply; it may have gone through.";
+    if (/API key not configured/i.test(msg)) return "No DeepInfra key; add it in Settings.";
+    if (/deepinfra 40[13]/i.test(msg)) return "DeepInfra key rejected; fix in Settings.";
+    if (/no GPU available/.test(msg)) return /none free of/.test(msg) ? "No free GPU; add GPUs in Edit." : "Its GPUs failed to start; fix in Edit.";
+    if (/on any of its GPUs/.test(msg)) return "DeepInfra refused its GPUs; fix in Edit.";
+    if (/^delete deployment/.test(msg)) return "Couldn't delete its deployment; retry.";
+    if (/already exists/.test(msg)) return "That model ID is taken; change it.";
+    if (/deepinfra 429/i.test(msg)) return "DeepInfra is rate limiting; retry soon.";
+    if (/deepinfra 5\d\d|dial tcp|i\/o timeout|connection refused|EOF|deadline exceeded/i.test(msg)) return "DeepInfra didn't answer; retry soon.";
+    if (/deepinfra 4\d\d/i.test(msg)) return "DeepInfra refused it; see the CPA log.";
+    if (/^model .* (not found|was removed)$/.test(msg)) return "Removed elsewhere; the list will update.";
+    if (/hf_repo/.test(msg)) return "Hugging Face repo must be owner/name.";
+    if (/listed twice/.test(msg)) return "A GPU is listed twice; remove one.";
+    if (/invalid gpu/i.test(msg)) return "Unknown GPU; pick one from the list.";
+    if (e && e.status === 404) return "Plugin not loaded; reload the panel.";
+    if (e && (e.status === 401 || e.status === 403)) return "Access denied; sign in to the panel again.";
+    if (/^(Management key|No management key)/.test(msg)) return msg + "; enter it above.";
+    if (/; /.test(msg) && /^[A-Z]/.test(msg)) return msg + "."; // already says what to do
+    if (/^Can't reach|^CLIProxyAPI didn't/.test(msg)) return msg + "; retry shortly.";
+    if (!(e && e.status === 400)) return e && e.status > 400 && e.status < 500 ? "CLIProxyAPI refused it; see the CPA log." : "CLIProxyAPI error; see the CPA log."; // the raw text is in the tooltip
+    return msg.charAt(0).toUpperCase() + msg.slice(1) + "."; // shown clamped, whole in the tooltip
   }
+  function isNoGPU(text) { return /^no free GPU/i.test(text); }
 
-  function parseContext(s) {
-    var m = /^\s*(\d+(?:\.\d+)?)\s*([kKmM]?)\s*$/.exec(s);
-    if (!m) return null;
-    var v = parseFloat(m[1]), u = m[2].toLowerCase();
-    if (u === "k") v *= 1024;
-    else if (u === "m") v *= 1048576;
-    v = Math.round(v);
-    return v > 0 ? v : null;
+  /* ---------- banner ---------- */
+  // showBanner shows one line about a problem that blocks the page; "" hides it. box "key" shows the
+  // key box; act labels a button (Settings, Send anyway).
+  var bannerAct = "";
+  function showBanner(text, kind, box, act) {
+    if (text && $("dlg").open && $("banner-text").textContent !== text && $("d-msg").textContent !== text) announce(text); // not twice with the dialog's own line // the page behind the dialog isn't heard
+    if (box !== "key" && $("keybox").contains(document.activeElement)) setTimeout(function () { var shown = function (n) { return !n.hidden && n.style.visibility !== "hidden" && !(n.parentNode && n.parentNode.hidden); }; (shown($("add")) ? $("add") : shown($("gear")) && shown($("gearbox")) ? $("gear") : $("key")).focus({ preventScroll: true }); }); // once banner() has shown it
+    if (!act && document.activeElement === $("banner-act")) (box === "key" ? $("key") : $("add")).focus({ preventScroll: true });
+    $("banner").hidden = !text;
+    $("banner-text").setAttribute("role", "alert");
+    set($("banner-text"), "title", rejectedNote && box === "key" ? "It isn't sent again: CLIProxyAPI bans this IP for 30 minutes after 5 rejected keys." : "");
+    set($("banner"), "className", "banner" + (kind ? " " + kind : ""));
+    set($("banner-text"), "textContent", text || "");
+    $("keybox").hidden = box !== "key";
+    bannerAct = act || "";
+    $("banner-act").hidden = !act;
+    set($("banner-act"), "textContent", act || "");
   }
-
-  function relTime(unix) {
-    unix = Number(unix);
-    if (!unix || unix <= 0) return "never";
-    var s = Math.max(0, Math.floor(Date.now() / 1000 - unix));
-    if (s < 45) return "just now";
-    var m = Math.round(s / 60);
-    if (m < 60) return m + "m ago";
-    var h = Math.floor(s / 3600);
-    if (h < 48) return h + "h ago";
-    return Math.floor(s / 86400) + "d ago";
+  $("banner-act").addEventListener("click", function () { useKey(true); });
+  function banner() {
+    banner0();
+    // The bar's controls keep their place: hidden only while the key box asks for a key, and
+    // invisible (not removed) until the list has loaded, when the key's state is known.
+    var keyUp = !$("banner").hidden && !$("keybox").hidden;
+    var failed = !S.loaded && !!S.loadErr && !verified; // nothing to set or add yet: no empty bar
+    $("gearbox").hidden = !sentKey || keyUp || failed;
+    $("add").hidden = $("gearbox").hidden || !S.loaded && !!S.loadErr; // until the list loads
+    $("gearbox").style.visibility = verified && (S.loaded || S.loadErr) ? "" : "hidden"; // an accepted key: Settings even if the list failed
+    $("add").style.visibility = verified && S.loaded ? "" : "hidden"; // the GPUs and the key's state come with the list
   }
-
-  function money(n) { return "$" + (Number(n) || 0).toFixed(2); }
-
-  function statusClass(st) {
-    switch (st) {
-      case "running": return "green";
-      case "deploying": case "downloading": return "amber";
-      case "failed": return "red";
-      default: return "gray";
+  function banner0() {
+    var e = S.loadErr;
+    // A typed key stays "Checking…" until the list loads, so focus has somewhere to go when the box closes.
+    if (verified && S.loaded || e || !sentKey) { $("key-use").removeAttribute("aria-busy"); $("key-use").textContent = "Use key"; $("key").readOnly = false; }
+    if (sentKey && (sentKey !== verified || !S.loaded) && $("key-use").getAttribute("aria-busy") === "true" && !e) return; // the banner stays; its button says "Checking…"
+    if (!sentKey && banUntil > Date.now()) return showBanner("IP banned for rejected keys; wait until " + clock(banUntil) + ".", "err", "key");
+    if (!sentKey) return showBanner(!rejectedNote ? "Enter the management key:" : /panel/.test(rejectedNote) ? "Panel login rejected; enter a key:" : "Key rejected; enter another:", rejectedNote ? "err" : "", "key");
+    if (e && (e.kind === "hdr" || e.kind === "ban")) return showBanner(e.message, "err");
+    if (e && e.net) { showBanner((/^Can't reach/.test(e.message) ? "Can't reach CLIProxyAPI" : "CLIProxyAPI didn't answer") + "; retrying.", "err"); return set($("banner-text"), "title", e.kind === "net" ? "" : e.message); }
+    if (e) { showBanner(errText(e), "err", e.kind === "key" ? "key" : ""); return set($("banner-text"), "title", e.message); } // it retries every 15 s
+    if (S.loaded && !S.apiKeySet) return showBanner("No DeepInfra key; add it in Settings.", "warn");
+    if (S.diErr) {
+      var bad = /deepinfra 40[13]/i.test(S.diErr);
+      showBanner(bad ? "DeepInfra key rejected; fix in Settings." : /deepinfra 429/i.test(S.diErr) ? "DeepInfra is rate limiting; retrying." : /deepinfra 4\d\d/i.test(S.diErr) ? "DeepInfra error; see the CPA log." : "DeepInfra didn't answer; retrying.", "warn");
+      return set($("banner-text"), "title", S.diErr);
     }
+    showBanner("");
   }
 
-  /* ---------- rendering ---------- */
-  function gpuPrice(name) {
-    for (var i = 0; i < state.gpus.length; i++) if (state.gpus[i].name === name) return state.gpus[i].usd_per_hour;
-    return null;
+  /* ---------- list ---------- */
+  function gpuInfo(name) { for (var i = 0; i < S.gpus.length; i++) if (S.gpus[i].name === name) return S.gpus[i]; return null; }
+  function priceOf(m) { return Number(m.usd_per_hour) || (gpuInfo(m.gpu) || {}).usd_per_hour || 0; }
+  function findModel(id) { for (var i = 0; i < S.models.length; i++) if (S.models[i].id === id) return S.models[i]; return null; }
+  function cheapest(gpus) {
+    return (gpus || []).slice().sort(function (a, b) { return ((gpuInfo(a) || {}).usd_per_hour || 0) - ((gpuInfo(b) || {}).usd_per_hour || 0); });
+  }
+  function idleLeft(m) { var last = Number(m.last_used_unix); return last > 0 && S.idle != null ? Math.ceil((last + S.idle * 60 - Date.now() / 1000) / 60) : null; }
+  function label(m) { return m.display_name || m.id; }
+
+  // rowInfo is a model's facts line, in one order for every state (GPU, price while billing, context,
+  // idle stop), and a second line only for something that needs attention.
+  function rowInfo(m) {
+    var st = m.status || "unknown", p = priceOf(m), note = S.note[m.id], up = st === "running" || STARTING.test(st);
+    var gpus = cheapest(m.gpus), r = { dot: "", facts: "", line2: "", kind: "", tip: "" };
+    var next = gpus.filter(function (g) { return (gpuInfo(g) || {}).available; })[0] || gpus[0];
+    var where = m.gpu && st !== "scaled-to-zero" ? short(m.gpu) : short(next);
+    var many = S.models.filter(function (x) { return x.status === "running"; }).length > 1; // with one, the top bar's total is its price
+    r.facts = (st === "running" && p && many ? money(p) + "/hr · " : "") + where + " · " + fmtCtx(m.context) + " ctx"; // a display name hides the ID, so lead with it
+    r.dot = st === "running" ? "run" : STARTING.test(st) ? "start" : st === "failed" ? "fail" : KNOWN.test(st) ? "" : "unk";
+    if (st === "failed") {
+      r.line2 = gpus.some(function (g) { return g !== m.gpu; }) ? "Failed; Wake tries the next GPU." : "Failed; try other GPUs, then Wake.";
+      r.kind = "err";
+    }
+    if (m.error && !(S.apiKeySet && /API key not configured/i.test(m.error))) { r.line2 = errText(m.error); r.kind = isNoGPU(r.line2) ? "warn" : "err"; r.tip = m.error; }
+    if ((/DeepInfra key/.test(r.line2) || st === "unknown") && S.loaded && (!S.apiKeySet || /deepinfra 40[13]/i.test(S.diErr))) { r.line2 = ""; r.kind = ""; } // the banner says it
+    if (note) { r.line2 = note.text; r.kind = note.kind; r.tip = note.tip || ""; }
+    if (S.busy[m.id]) { r.tip = ""; } // shown in the time slot
+    return r;
   }
 
-  function checkedGpus() {
-    return Array.prototype.map.call($("f-gpus").querySelectorAll("input:checked"), function (c) { return c.value; });
+  // makeRow builds a model's row once; fillRow then changes only what differs, so focus stays put.
+  var rowSeq = 0;
+  function makeRow(id) {
+    var li = el("li", "row"), main = el("div"), l1 = el("div", "line1"), swap = el("div", "swap"), n = ++rowSeq;
+    li.setAttribute("data-id", id);
+    li.dot = li.appendChild(el("span", "dot"));
+    li.dot.setAttribute("role", "img");
+    li.appendChild(main);
+    main.style.minWidth = "0";
+    main.appendChild(l1);
+    li.nm = l1.appendChild(el("button", "name"));
+    li.nm.type = "button";
+    li.nm.setAttribute("aria-haspopup", "dialog"); // it opens Edit
+    var tail = l1.appendChild(el("span", "tail"));
+    li.idf = tail.appendChild(el("span", "meta idf")); // a display name hides the ID: shown first
+    li.facts = tail.appendChild(el("span", "meta"));
+    li.l2 = main.appendChild(el("div", "meta"));
+    li.appendChild(swap);
+    li.sw = swap;
+    li.t = swap.appendChild(el("span", "t"));
+    li.t.appendChild(el("span", "sr")).textContent = "used ";
+    li.t.appendChild(el("span", "sr")).textContent = " ago";
+    li.t.insertBefore(el("span"), li.t.lastChild); // the visible time, between "used " and " ago"
+    li.t.appendChild(el("span", "sr")); // what the tooltip adds, for keyboard and screen readers
+    li.tog = swap.appendChild(el("button", "icon tog"));
+    li.tog.type = "button";
+    li.dot.id = "r" + n + "d"; li.facts.id = "r" + n + "f"; li.idf.id = "r" + n + "i"; li.l2.id = "r" + n + "a"; li.t.id = "r" + n + "t";
+    li.nm.setAttribute("aria-describedby", [li.dot.id, li.facts.id, li.l2.id, li.t.id].join(" "));
+    return li;
   }
-
-  // NOTE: unavailable GPUs stay selectable; availability changes and is checked at each provision.
-  function renderGpuOptions(checked) {
-    var sig = JSON.stringify(state.gpus);
-    if (sig === gpuSig && !checked) return;
-    gpuSig = sig;
-    var box = $("f-gpus");
-    var want = checked || checkedGpus();
-    box.textContent = "";
-    if (!state.gpus.length) { box.appendChild(el("span", "muted", "No GPUs listed (is the API key set?)")); return; }
-    state.gpus.forEach(function (g) {
-      var lab = el("label");
-      var cb = el("input");
-      cb.type = "checkbox";
-      cb.value = g.name;
-      cb.checked = want.indexOf(g.name) >= 0;
-      lab.appendChild(cb);
-      lab.appendChild(el("span", "mono", g.name));
-      lab.appendChild(el("span", "sub", money(g.usd_per_hour) + "/hr" + (g.available ? "" : ", none free now")));
-      box.appendChild(lab);
+  function fillRow(li, m) {
+    var st = m.status || "unknown", i = rowInfo(m), name = label(m), up = st === "running";
+    var act = STARTING.test(st) || S.busy[m.id] || !KNOWN.test(st) || !verified ? "" : up ? "sleep" : "wake"; // without an accepted key nothing would be sent
+    set(li.dot, "className", "dot " + i.dot);
+    li.dot.setAttribute("aria-label", KNOWN.test(st) ? st : "status " + st);
+    if (STAGE[st]) li.dot.setAttribute("aria-hidden", "true"); else li.dot.removeAttribute("aria-hidden"); // the time slot says "Deploying"
+    li.nm.setAttribute("aria-describedby", (STAGE[st] ? [] : [li.dot.id]).concat(li.idf.id, li.facts.id, li.l2.id, li.t.id).join(" "));
+    set(li.dot, "title", KNOWN.test(st) ? "" : "Status " + st);
+    set(li.nm, "textContent", name);
+    set(li.nm, "title", m.id + " · " + m.hf_repo);
+    set(li.facts, "textContent", i.facts);
+    set(li.idf, "textContent", m.display_name && m.display_name !== m.id ? m.id : "");
+    li.idf.hidden = !li.idf.textContent;
+    set(li.l2, "textContent", i.line2);
+    set(li.l2, "className", "meta " + i.kind);
+    set(li.l2, "title", i.tip);
+    li.l2.hidden = !i.line2;
+    li.classList.toggle("att", !!i.line2); li.classList.toggle("named", !!m.display_name && m.display_name !== m.id);
+    li.classList.toggle("noact", !act);
+    li.classList.toggle("rest", st === "scaled-to-zero" && !i.line2);
+    set(li.facts, "title", i.facts);
+    // The time slot: "Copied" briefly, a start's stage, else the last use.
+    var flash = S.busy[m.id] || (S.flash && S.flash.id === m.id ? S.flash.text : ""), used = ago(m.last_used_unix), stage = STAGE[st], t = flash || stage || used;
+    li.classList.toggle("copied", !!flash || !!stage);
+    var tv = li.t.children[1], isTime = t === used && !!used;
+    if (tv.textContent !== t) tv.textContent = t;
+    var whole = !isTime || used === "now"; // a word (or "now"): said in one span with what follows
+    li.t.firstChild.hidden = whole;
+    var ago0 = !isTime ? t : used === "now" ? "used now" : " ago";
+    if (!whole) tv.removeAttribute("aria-hidden"); else tv.setAttribute("aria-hidden", "true"); // a word is said with what follows it, in one span
+    var left = st === "running" ? idleLeft(m) : null;
+    var more = stage ? "; a new deployment takes ~12 min" : left == null ? "" : left > 0 ? "; idle stop in " + left + "m" : "; idle stop due";
+    if (li.t.children[2].textContent !== ago0 + more) li.t.children[2].textContent = ago0 + more; // one span, so it reads "ago; idle stop…"
+    li.t.children[2].hidden = !(ago0 + more);
+    set(li.sw, "title", stage ? (used && used !== "now" ? "Started " + used + " ago; " : "") + "a new deployment takes ~12 min" : used ? "Last used" + (left == null ? "" : left > 0 ? "; idle stop in " + left + "m" : "; idle stop due") : "");
+    if (!act && document.activeElement === li.tog) li.nm.focus({ preventScroll: true });
+    li.tog.hidden = !act;
+    if (act && li.tog.getAttribute("data-act") !== act) { li.tog.setAttribute("data-act", act); li.tog.innerHTML = IC[act]; }
+    set(li.tog, "title", up ? "Sleep: stop its GPUs" + more : st === "failed" ? "Wake: retry it" : "Wake: start its GPUs"); // the idle stop, where the time slot's tooltip can't show
+    li.tog.setAttribute("aria-label", (up ? "Sleep " : "Wake ") + name);
+  }
+  function rowOf(id) { return $("list").querySelector('.row[data-id="' + CSS.escape(id) + '"]'); }
+  function renderList() {
+    var list = $("list"), seen = {};
+    S.models.forEach(function (m) { seen[m.id] = 1; });
+    // Stale rows go first, so moving the others doesn't take focus from them.
+    Array.prototype.slice.call(list.children).forEach(function (li) {
+      if (seen[li.getAttribute("data-id")]) return;
+      if (li.contains(document.activeElement)) { // focus the next row, else the previous, else Add
+        var to = li.nextElementSibling || li.previousElementSibling;
+        (to && to.nm || $("add")).focus({ preventScroll: true, focusVisible: byKey });
+      }
+      li.remove();
     });
+    S.models.forEach(function (m, i) {
+      var li = rowOf(m.id) || makeRow(m.id);
+      if (list.children[i] !== li) list.insertBefore(li, list.children[i] || null);
+      fillRow(li, m);
+    });
+    var e = $("empty");
+    set(e, "textContent", !sentKey || $("key-use").getAttribute("aria-busy") === "true" ? "" : S.loaded ? "No models yet." : S.loadErr ? "" : "Loading…"); // a typed key: its box says it's checking
+    e.hidden = S.models.length > 0 || !e.textContent;
   }
 
   function renderCost() {
-    var total = 0;
-    state.models.forEach(function (m) {
-      if (m.status === "running") total += Number(m.usd_per_hour) || 0;
-    });
-    $("cost").textContent = money(total);
+    var c = $("cost"), text = "";
+    if (S.loaded && !S.loadErr && !S.models.some(function (m) { return m.status === "unknown"; })) {
+      var total = 0, unpriced = false, running = false;
+      S.models.forEach(function (m) {
+        if (m.status === "running") { running = true; total += priceOf(m); if (!priceOf(m)) unpriced = true; }
+      });
+      if (running) text = "Running <b>" + (unpriced ? "≥ " : "") + money(total) + "</b>/hr";
+    }
+    if (c.innerHTML !== text) c.innerHTML = text;
+    c.hidden = !text;
+  }
+  function render() { banner(); renderList(); renderCost(); }
+
+  /* ---------- row actions ---------- */
+  var held = false; // a long-press opened the menu: the click after it is dropped
+  $("list").addEventListener("click", function (e) {
+    var li = e.target.closest(".row");
+    if (!li) return;
+    if (held && e.detail) { held = false; return; }
+    var b = e.target.closest(".tog"), id = li.getAttribute("data-id");
+    if (!b) return openEdit(id);
+    var act = b.getAttribute("data-act");
+    if (act === "sleep" && !confirm("Sleep " + id + "? Its GPUs stop now; the next request starts it again.")) return;
+    rowAction(id, act);
+  });
+  function rowAction(id, act, keep) {
+    var verb0 = keep ? "Keep awake" : act.charAt(0).toUpperCase() + act.slice(1);
+    S.busy[id] = keep ? "Keeping…" : act === "wake" ? "Waking…" : act === "sleep" ? "Sleeping…" : "Removing…";
+    var sentAt = Date.now() / 1000;
+    renderList(); // the last result stays until this one's comes
+    var q = "?id=" + encodeURIComponent(id);
+    api(act === "remove" ? "DELETE" : "POST", act === "remove" ? "/models" + q : "/models/" + act + q).then(function () {
+      delete S.busy[id]; delete S.note[id];
+      if (act === "remove") {
+        S.models = S.models.filter(function (m) { return m.id !== id; });
+        announce("Removed " + id + ".");
+        return syncModels().then(function (err) { if (err) announce("/model updates on reload."); }); // the /model list; it refreshes on CLIProxyAPI's next reload otherwise
+      }
+      var m = findModel(id);
+      if (m && act === "wake") { m.last_used_unix = Math.floor(Date.now() / 1000); if (m.status !== "running") m.status = "deploying"; }
+      if (m && act === "sleep") m.status = "scaled-to-zero";
+      announce(id + (keep ? ": idle timer reset." : act === "wake" ? " is starting." : " scaled to zero."));
+      if (keep) flash(id, "Awake");
+    }, function (e) {
+      delete S.busy[id];
+      if (e.kind === "key") { note(id, "err", verb0 + " not done; retry."); return; } // the banner asks for the key
+      if (e.kind === "ban" || e.kind === "hdr") { note(id, "err", verb0 + " not done; see the banner."); announce(id + ": " + verb0 + " not done; see the banner."); var lb = rowOf(id); if (lb) { lb.classList.remove("again"); void lb.offsetWidth; lb.classList.add("again"); setTimeout(function () { lb.classList.remove("again"); }, 1300); } return; } // the banner says why
+      var t = errText(e), verb = verb0, li0 = rowOf(id);
+      if (li0) { li0.classList.remove("again"); void li0.offsetWidth; li0.classList.add("again"); setTimeout(function () { li0.classList.remove("again"); }, 1300); }
+      if (/^CLIProxyAPI error/.test(t)) t = verb + " failed; see the CPA log."; // says which action (a lost reply's says it in the tooltip)
+      if (act === "sleep" && /^DeepInfra refused/.test(t)) t = "DeepInfra refused it; retry."; // nothing in Edit affects stopping
+      var n = note(id, isNoGPU(t) ? "warn" : "err", t, verb + ": " + e.message);
+      // A lost reply settles on the next load: gone if it happened, "Not done" if not.
+      n.verb = verb;
+      if (e.net) n.done = function (m) { return act === "remove" ? !m : !!m && (act === "sleep" ? m.status === "scaled-to-zero" : keep ? m.last_used_unix >= sentAt - 1 : m.status === "running" || STARTING.test(m.status)); };
+      announce(id + ": " + (/^(Wake|Sleep|Keep awake|Remove)\b/.test(S.note[id].text) ? "" : verb + (e.net ? ": " : " failed: ")) + S.note[id].text);
+    }).then(function () { render(); load(); });
+  }
+  // flash shows a word in a row's time slot for two seconds.
+  function flash(id, text) {
+    var f = S.flash = { id: id, text: text };
+    renderList();
+    setTimeout(function () { if (S.flash === f) { S.flash = null; renderList(); } }, 2000);
+  }
+  // note shows a short result in a model's row for two minutes.
+  function note(id, kind, text, tip) {
+    var n = S.note[id] = { kind: kind, text: text, tip: tip };
+    setTimeout(function () { if (S.note[id] === n) { delete S.note[id]; renderList(); } }, 120000);
+    return n;
   }
 
-  function renderList() {
-    var box = $("list");
-    box.textContent = "";
-    $("meta").textContent = state.idle != null ? "Idle window: " + state.idle + " min" : "";
-    if (!state.models.length) {
-      box.appendChild(el("div", "empty", "No models yet"));
-      return;
-    }
-    var table = el("table");
-    var thead = el("thead"), hr = el("tr");
-    ["Model", "HF repo", "GPU", "Context", "Status", "Last used", "Actions"].forEach(function (h) {
-      hr.appendChild(el("th", null, h));
+  /* ---------- context menu (right-click, long-press, or Shift+F10 / the Menu key on a row) ---------- */
+  var menu = null, menuFor = "", menuFrom = null;
+  function closeMenu(refocus) {
+    if (!menu) return;
+    menu.remove();
+    menu = null;
+    held = false;
+    $("list").inert = false;
+    Array.prototype.forEach.call($("list").querySelectorAll(".menu-open"), function (r) { r.classList.remove("menu-open"); });
+    var li = refocus && rowOf(menuFor);
+    if (li) (li.contains(menuFrom) && !menuFrom.hidden ? menuFrom : li.nm).focus({ focusVisible: byKey, preventScroll: refocus === "scroll" });
+  }
+  // The menu is fixed: a scroll would leave it beside another model.
+  window.addEventListener("scroll", function () { if (menu) closeMenu("scroll"); }, { capture: true, passive: true });
+  function openMenu(id, x, y) {
+    closeMenu();
+    var m = findModel(id);
+    if (!m) return;
+    menuFor = id;
+    menuFrom = document.activeElement;
+    menu = $("menuhost").appendChild(el("div", "menu"));
+    menu.setAttribute("role", "menu");
+    menu.setAttribute("aria-label", label(m));
+    var left = m.status === "running" ? idleLeft(m) : null, used = ago(m.last_used_unix);
+    var row = rowOf(id), act = STARTING.test(m.status) || S.busy[id] || !KNOWN.test(m.status) || !verified ? "" : m.status === "running" ? "sleep" : "wake";
+    var touch = touchy() || byKey; // touch hides the time slot, and the keyboard can't hover it: the menu says it
+    var cutL2 = row && !row.l2.hidden && row.l2.scrollWidth > row.l2.clientWidth + 1 ? row.l2.textContent : ""; // a note the row cuts off
+    var info = !touch ? cutL2 : [cutL2,STAGE[m.status] ? "a new deployment takes ~12 min" : "", left == null ? "" : left > 0 ? "idle stop in " + left + "m" : "idle stop due"].filter(Boolean).join(" · "); // the row shows the time
+    info = info.charAt(0).toUpperCase() + info.slice(1);
+    menu.innerHTML = (info ? '<div class="sub" id="menu-info" role="none" style="padding:4px 8px">' + esc(info) + "</div>" : "") +
+      (act && (touchy() || held) ? '<button type="button" role="menuitem" data-do="' + act + '">' + (act === "wake" ? "Wake" : "Sleep") + "</button>" : "") + // touch: no hover action
+      '<button type="button" role="menuitem" data-do="edit">Edit</button>' + (m.status === "running" && verified ? '<button type="button" role="menuitem" data-do="keep">Keep awake</button>' : "") +
+      '<button type="button" role="menuitem" data-do="copy">' + (touchy() ? "Copy " + esc(id) : "Copy model ID") + "</button>" + (verified ? '<hr><button type="button" role="menuitem" class="danger" data-do="remove">Remove…</button>' : "");
+    if (info) menu.setAttribute("aria-describedby", "menu-info");
+    menu.style.left = Math.max(8, Math.min(x, innerWidth - menu.offsetWidth - 8)) + "px";
+    menu.style.top = Math.max(8, Math.min(y, innerHeight - menu.offsetHeight - 8)) + "px";
+    $("list").inert = true;
+    if (row) row.classList.add("menu-open");
+    focusQuiet(menu.querySelector("button")); // a ring only after the keyboard
+    // A click counts only if it started in the menu, so lifting a long-press finger can't pick an item.
+    var armed = false;
+    menu.addEventListener("pointerdown", function () { armed = true; });
+    menu.addEventListener("mousedown", function (e) { e.preventDefault(); });
+    menu.addEventListener("click", function (e) {
+      var d = e.target.getAttribute("data-do");
+      if (!d || (e.detail && !armed)) return;
+      closeMenu(true);
+      if (d === "edit") openEdit(id);
+      else if (d === "keep") rowAction(id, "wake", true);
+      else if (d === "wake") rowAction(id, "wake");
+      else if (d === "sleep") { if (confirm("Sleep " + id + "? Its GPUs stop now; the next request starts it again.")) rowAction(id, "sleep"); }
+      else if (d === "copy") copy(id);
+      else if (d === "remove") confirmRemove(id);
     });
-    thead.appendChild(hr); table.appendChild(thead);
-    var tbody = el("tbody");
-
-    state.models.forEach(function (m) {
-      var tr = el("tr");
-
-      var tdId = el("td");
-      if (m.display_name) tdId.appendChild(el("div", null, m.display_name));
-      tdId.appendChild(el("div", m.display_name ? "sub mono" : "mono", m.id));
-      tr.appendChild(tdId);
-
-      var tdRepo = el("td");
-      tdRepo.appendChild(el("div", "mono", m.hf_repo || "-"));
-      if (m.revision) tdRepo.appendChild(el("div", "sub mono", "@" + String(m.revision).slice(0, 8)));
-      tr.appendChild(tdRepo);
-
-      // The GPU list cheapest first, with the one the deployment is on in full text.
-      var tdGpu = el("td");
-      (m.gpus || []).slice().sort(function (a, b) { return (gpuPrice(a) || 0) - (gpuPrice(b) || 0); }).forEach(function (g) {
-        var price = gpuPrice(g);
-        var line = el("div", g === m.gpu ? null : "sub", g + (price != null ? " · " + money(price) + "/hr" : ""));
-        if (g === m.gpu) line.title = "Current deployment";
-        tdGpu.appendChild(line);
-      });
-      tr.appendChild(tdGpu);
-
-      tr.appendChild(el("td", null, fmtContext(m.context)));
-
-      var tdSt = el("td");
-      tdSt.appendChild(el("span", "badge " + statusClass(m.status), m.status || "unknown"));
-      if (m.error) tdSt.appendChild(el("div", "row-err", m.error));
-      tr.appendChild(tdSt);
-
-      var tdLast = el("td", "muted", relTime(m.last_used_unix));
-      if (Number(m.last_used_unix) > 0) tdLast.title = new Date(m.last_used_unix * 1000).toLocaleString();
-      tr.appendChild(tdLast);
-
-      var tdAct = el("td");
-      var acts = el("div", "actions");
-      var busy = !!state.busy[m.id];
-      var wake = el("button", null, "Wake");
-      wake.type = "button";
-      wake.disabled = busy || m.status === "running" || m.status === "deploying" || m.status === "downloading";
-      wake.addEventListener("click", function () { rowAction(m.id, "/wake?id=", "POST"); });
-      var sleep = el("button", null, "Sleep");
-      sleep.type = "button";
-      sleep.disabled = busy || m.status === "scaled-to-zero" || m.status === "idle";
-      sleep.addEventListener("click", function () { rowAction(m.id, "/sleep?id=", "POST"); });
-      var edit = el("button", null, "Edit");
-      edit.type = "button";
-      edit.disabled = busy;
-      edit.addEventListener("click", function () { startEdit(m); });
-      var rm = el("button", "danger", "Remove");
-      rm.type = "button";
-      rm.disabled = busy;
-      rm.addEventListener("click", function () {
-        if (confirm("Remove model \"" + m.id + "\"? This releases its GPUs and deletes the entry.")) {
-          rowAction(m.id, "", "DELETE");
-        }
-      });
-      acts.appendChild(wake); acts.appendChild(sleep); acts.appendChild(edit); acts.appendChild(rm);
-      tdAct.appendChild(acts);
-      if (state.rowErr[m.id]) tdAct.appendChild(el("div", "row-err", state.rowErr[m.id]));
-      tr.appendChild(tdAct);
-
-      tbody.appendChild(tr);
+    menu.addEventListener("keydown", function (e) {
+      var items = Array.prototype.slice.call(menu.querySelectorAll("button")), i = items.indexOf(document.activeElement), n = items.length;
+      var to = { ArrowDown: (i + 1) % n, ArrowUp: (i + n - 1) % n, Home: 0, End: n - 1 }[e.key];
+      if (to != null) { e.preventDefault(); items[to].focus(); }
+      else if (e.key === "Escape" || e.key === "Tab") { e.preventDefault(); closeMenu(true); }
     });
-    table.appendChild(tbody);
-    box.appendChild(table);
+  }
+  $("list").addEventListener("contextmenu", function (e) {
+    var li = e.target.closest(".row");
+    if (!li) return;
+    e.preventDefault();
+    var r = li.nm.getBoundingClientRect();
+    openMenu(li.getAttribute("data-id"), e.clientX || r.left, e.clientY || r.bottom + 4);
+  });
+  $("list").addEventListener("keydown", function (e) {
+    if (!(e.key === "ContextMenu" || (e.shiftKey && e.key === "F10"))) return;
+    var li = e.target.closest(".row");
+    if (!li) return;
+    e.preventDefault();
+    var r = e.target.getBoundingClientRect();
+    openMenu(li.getAttribute("data-id"), r.left, r.bottom + 4);
+  });
+  // A long-press opens the menu on touch screens, where iOS Safari fires no contextmenu event.
+  var press = null;
+  $("list").addEventListener("pointerdown", function (e) {
+    var li = e.target.closest(".row");
+    held = false;
+    if (e.pointerType !== "touch" || !li) return;
+    var x = e.clientX, y = e.clientY;
+    press = { x: x, y: y, timer: setTimeout(function () { press = null; held = true; openMenu(li.getAttribute("data-id"), x, y); }, 500) };
+  });
+  $("list").addEventListener("touchend", function (e) { if (held && menu) e.preventDefault(); }, { passive: false }); // keep focus in the menu
+  ["pointerup", "pointercancel"].forEach(function (t) { $("list").addEventListener(t, function () { if (press) { clearTimeout(press.timer); press = null; } }); });
+  $("list").addEventListener("pointermove", function (e) {
+    if (press && Math.abs(e.clientX - press.x) + Math.abs(e.clientY - press.y) > 10) { clearTimeout(press.timer); press = null; }
+  });
+  document.addEventListener("pointerdown", function (e) {
+    if (!menu || menu.contains(e.target)) return;
+    closeMenu();
+    if (e.pointerType !== "mouse") { e.preventDefault(); dropClick(); var li = rowOf(menuFor); if (li) li.nm.focus({ preventScroll: true, focusVisible: false }); } // a touch's click lands after the list is live again; focus stays near
+  });
+  // dropClick swallows the click of the touch that closed a menu or popover, and nothing after it:
+  // a scroll (pointercancel) or the next tap (pointerdown) ends it.
+  function dropClick() {
+    var drop = function (ev) { ev.preventDefault(); ev.stopPropagation(); end(); };
+    function end() { ["click", "pointerdown", "pointercancel"].forEach(function (t) { document.removeEventListener(t, t === "click" ? drop : end, true); }); }
+    document.addEventListener("click", drop, true);
+    document.addEventListener("pointerdown", end, true);
+    document.addEventListener("pointercancel", end, true);
+    setTimeout(end, 1000);
+  }
+  function copy(id) {
+    var done = function () {
+      announce("Copied " + id + ".");
+      var li = rowOf(id);
+      if (li && document.activeElement === li.tog) li.nm.focus({ preventScroll: true }); // the toggle hides while "Copied" shows
+      flash(id, "Copied");
+    };
+    var old = function () {
+      var back = document.activeElement, t = document.body.appendChild(el("textarea"));
+      t.value = id;
+      t.select();
+      var ok = false;
+      try { ok = document.execCommand("copy"); } catch (e) {}
+      t.remove();
+      if (back && back.focus) back.focus({ preventScroll: true, focusVisible: byKey });
+      if (ok) return done();
+      prompt("Copy the model ID:", id); // the browser blocked copying; this shows it selected
+    };
+    if (navigator.clipboard) navigator.clipboard.writeText(id).then(done, old); else old();
+  }
+  function confirmRemove(id) {
+    var m = findModel(id), dep = m && (m.gpu || m.deploy_id);
+    if (!confirm("Remove " + id + "? " + (dep ? "This deletes its deployment (stopping its GPUs) and the model." : "This removes the model."))) return false;
+    rowAction(id, "remove");
+    return true;
   }
 
   /* ---------- data ---------- */
-  var loading = false;
+  var loading = null, again = false;
+  // settle runs fn after the first successful load that started after this call (a lost reply's
+  // outcome shows there), however many loads fail before it.
+  var settlers = [];
+  function settle(fn) { settlers.push({ since: tick, fn: fn }); load(); }
   function load() {
-    if (loading) return Promise.resolve();
-    loading = true;
-    return api("GET", "/models").then(function (d) {
-      state.models = Array.isArray(d.models) ? d.models : [];
-      state.gpus = Array.isArray(d.gpus) ? d.gpus : [];
-      state.idle = d.idle_minutes != null ? d.idle_minutes : null;
-      $("s-key").placeholder = d.api_key_set ? "Saved (type to replace)" : "Not set";
-      showBanner(!d.api_key_set ? "Add your DeepInfra API key under Settings to get started." : d.deepinfra_error ? "Can't reach DeepInfra, so model status is unknown (check the API key under Settings): " + d.deepinfra_error : "");
-      keyInput.classList.remove("attn");
-      renderGpuOptions(); renderCost(); renderList();
-    }).catch(function (e) {
-      if (!e.auth) showBanner("Failed to load models: " + e.message);
-    }).then(function () { loading = false; });
-  }
-
-  function rowAction(id, suffix, method) {
-    state.busy[id] = true;
-    delete state.rowErr[id];
-    renderList();
-    var path = "/models" + (method === "DELETE" ? "?id=" + encodeURIComponent(id) : suffix + encodeURIComponent(id));
-    api(method, path).then(function () {
-      if (method === "DELETE") return syncModels(); // model set changed -> refresh /v1/models
-    }).catch(function (e) {
-      state.rowErr[id] = e.message;
+    if (loading) { again = true; return loading; }
+    var t = ++tick;
+    loading = api("GET", "/models").then(function (d) {
+      if (!Array.isArray(d.models)) throw fail("", "Unexpected reply; reload the panel");
+      if (t < mutTick) { again = true; return; } // it may predate the latest change
+      var was = {}, news = [];
+      S.models.forEach(function (m) { was[m.id] = m.status; });
+      d.models.forEach(function (m) {
+        var w = was[m.id];
+        if (!w || w === m.status || w === "unknown" || m.status === "unknown") return;
+        news.push(m.id + (m.status === "running" ? " is running." : m.status === "failed" ? " failed to start." : m.status === "scaled-to-zero" ? " scaled to zero." : " is " + m.status + "."));
+      });
+      Object.keys(was).forEach(function (id) { if (!d.models.some(function (m) { return m.id === id; }) && !S.busy[id] && !(S.note[id] && /^Removed elsewhere|Removed elsewhere/.test(S.note[id].text))) news.push(id + " was removed."); }); // a row note already said it
+      news = news.filter(function (t) { var n = S.note[t.split(" ")[0]]; return !(n && n.done); }); // a lost action's model: its settle says it
+      S.models = d.models.sort(byId);
+      S.gpus = Array.isArray(d.gpus) ? d.gpus : [];
+      S.idle = d.idle_minutes != null ? d.idle_minutes : null;
+      S.apiKeySet = !!d.api_key_set;
+      S.diErr = d.deepinfra_error || "";
+      S.loaded = true;
+      S.loadErr = null;
+      var due = settlers.filter(function (x) { return t > x.since; });
+      settlers = settlers.filter(function (x) { return t <= x.since; });
+      setTimeout(function () { due.forEach(function (x) { x.fn(); }); }); // after this load's render
+      Object.keys(S.note).forEach(function (id) {
+        var n = S.note[id];
+        if (!n.done) return;
+        if (n.done(findModel(id))) { delete S.note[id]; news.push(id + ": it went through."); } else { if (findModel(id) && findModel(id).error) { delete S.note[id]; news.push(id + ": " + errText(findModel(id).error)); return; } n.text = n.verb + " not done; retry."; n.done = null; news.push(id + ": not done; retry."); }
+      });
+      if (news.length) announce(news.join(" "));
+    }).then(null, function (e) {
+      S.loadErr = e;
     }).then(function () {
-      delete state.busy[id];
-      return load();
-    }).then(renderList);
+      loading = null;
+      render();
+      renderSettings();
+      if (again) { again = false; load(); }
+    });
+    return loading;
+  }
+  function start() { loadSettings(); load(); } // settings first: its GET checks a new key
+
+  /* ---------- settings ---------- */
+  var cfg = null;
+  function loadSettings() {
+    return request(CONFIG, "GET").then(function (c) { cfg = c || {}; renderSettings(); }, function () {});
+  }
+  function renderSettings(force) {
+    var idle = S.idle != null ? Number(S.idle) : cfg && cfg["idle-minutes"] != null ? Number(cfg["idle-minutes"]) : 30, sel = $("s-idle");
+    var opts = [15, 30, 60, 120, 240];
+    if (opts.indexOf(idle) < 0) opts.push(idle);
+    var html = opts.sort(function (a, b) { return a - b; }).map(function (n) { return '<option value="' + n + '"' + (n === idle ? " selected" : "") + ">" + (n < 60 || n % 60 ? n + " min" : n / 60 + (n === 60 ? " hour" : " hours")) + "</option>"; }).join("");
+    if (force || (sel._html !== html && document.activeElement !== sel)) { sel._html = html; sel.innerHTML = html; }
+    sel.disabled = !cfg && !S.loaded;
+    var keyHelp = !S.loaded ? "" : !S.apiKeySet ? "Not set; get one." : /deepinfra 40[13]/i.test(S.diErr) ? "Rejected; paste another key." : "Set."; // "Saved." is for a save just done
+    ["key", "idle"].forEach(function (w) {
+      var mine = sNote && sNote.which === w, h = $("s-" + w + "-help");
+      if (!mine && w === "key" && S.loaded && !S.apiKeySet) { if (!h.querySelector("a")) h.innerHTML = 'Not set; <a href="https://deepinfra.com/dash/api_keys" target="_blank" rel="noopener" style="color:inherit">get one</a>.'; }
+      else set(h, "textContent", mine ? sNote.text : w === "key" ? keyHelp : "Since the last request.");
+      set(h, "className", "sub" + (mine && sNote.kind ? " " + sNote.kind : !mine && w === "key" && h.textContent === "Rejected; paste another key." ? " warn" : "")); // as the banner says it
+      set(h, "title", mine && sNote.tip || h.textContent);
+    });
+  }
+  function openSettings(focusKey) {
+    $("settings").hidden = false;
+    $("gear").setAttribute("aria-expanded", "true");
+    if (!sNote || sNote.kind !== "err") sMsg(""); // a failure stays until the next change
+    renderSettings();
+    focusQuiet(focusKey || !S.apiKeySet || /deepinfra 40[13]/i.test(S.diErr) ? $("s-key") : $("s-idle"));
+  }
+  function closeSettings(refocus) {
+    if ($("settings").hidden) return;
+    $("settings").hidden = true;
+    $("gear").setAttribute("aria-expanded", "false");
+    if (refocus) $("gear").focus();
+  }
+  $("gear").addEventListener("click", function () { if ($("settings").hidden) openSettings(); else closeSettings(); });
+  $("gearbox").addEventListener("keydown", function (e) { if (e.key === "Escape" && !$("settings").hidden) { e.stopPropagation(); closeSettings(true); } });
+  $("gearbox").addEventListener("focusout", function (e) { if (e.relatedTarget && !this.contains(e.relatedTarget)) closeSettings(); });
+  document.addEventListener("pointerdown", function (e) {
+    if (e.target.closest("#gearbox") || $("settings").hidden) return;
+    closeSettings();
+    if (e.pointerType !== "mouse") { e.preventDefault(); dropClick(); $("gear").focus({ preventScroll: true }); } // the tap that closes it doesn't reach what's under it
+  });
+  // sMsg shows a settings status in that setting's help line (which: "key" or "idle") and says it.
+  var sNote = null;
+  // sErr is a settings failure in a few words (its line has room for ~30 characters); the raw text is the tooltip.
+  function sErr(e, sent, which) {
+    return e.net ? (sent === false ? "No reply; not saved, retry." : "No reply; may have saved.") : e.kind === "key" ? "Key rejected; enter it above."
+      : /deepinfra 40[13]/i.test(e.message) ? "Rejected; paste another key." : /^Unexpected reply/.test(e.message) ? "Not saved; reload the panel." : e.kind === "ban" || e.kind === "hdr" ? "Not saved; see the banner." : e.status === 400 && which !== "idle" ? "Not saved; check the value."
+      : e.status === 401 || e.status === 403 ? "Not saved; sign in again." : e.status === 404 ? "Not saved; reload the panel." : "Not saved; see the CPA log.";
+  }
+  function sMsg(text, kind, which, tip) {
+    sNote = text ? { text: text, kind: kind || "", which: which || (sNote && sNote.which) || "idle", tip: tip || "" } : null;
+    set($("s-msg"), "textContent", text);
+    renderSettings();
+    if ((kind === "err" || kind === "warn") && $("settings").hidden) { // a failure after it closed: show it (after the dialog, which would cover it)
+      var show = function () { $("settings").hidden = false; $("gear").setAttribute("aria-expanded", "true"); };
+      if ($("dlg").open) $("dlg").addEventListener("close", function () { if (sNote && /^(err|warn)$/.test(sNote.kind)) show(); }, { once: true }); else show(); // only if it's still a failure
+      announce((sNote.which === "key" ? "DeepInfra API key: " : "Idle stop: ") + text); // named: not taken for the dialog's own
+    }
+  }
+  $("s-key").addEventListener("keydown", function (e) {
+    if (e.key !== "Enter") return;
+    var k = this.value.trim(), inp = this;
+    if (!k) return;
+    if (/\s/.test(k)) return sMsg("Has spaces; paste it again.", "err", "key");
+    sMsg("Saving…", "", "key");
+    var wasSet = S.apiKeySet;
+    api("PUT", "/api-key", { api_key: k }).then(saved, function (e) {
+      sMsg(e.net ? "No reply; press Enter again." : sErr(e), /deepinfra 40[13]/i.test(e.message) ? "warn" : "err", "key", e.message);
+      if (e.kind === "hdr" || e.kind === "ban") load(); // the banner it points to
+      if (e.net && !wasSet) settle(function () { if (S.apiKeySet) saved(); }); // it went through
+    });
+    function saved() {
+      inp.value = "";
+      sMsg("Saved.", "", "key");
+      Object.keys(S.note).forEach(function (id) { if (/API key/.test(S.note[id].text)) delete S.note[id]; });
+      return load().then(function () {
+        if (/deepinfra 40[13]/i.test(S.diErr)) return sMsg("Rejected; paste another key.", "warn", "key");
+        if (addAfterKey) { addAfterKey = false; closeSettings(); openAdd(); }
+      });
+    }
+  });
+  var idleTimer = 0;
+  $("s-idle").addEventListener("change", function () { clearTimeout(idleTimer); idleTimer = setTimeout(saveIdle, 600); }); // arrow keys step through values
+  function saveIdle() {
+    var n = Number($("s-idle").value);
+    sMsg("Saving…", "", "idle");
+    var sent = false;
+    request(CONFIG, "GET").then(function (c) {
+      c = c || {};
+      c["idle-minutes"] = n;
+      sent = true;
+      return request(CONFIG, "PUT", c).then(function () { cfg = c; S.idle = n; });
+    }).then(function () { sMsg("Saved.", "", "idle"); load(); }, function (e) {
+      sMsg(sErr(e, sent, "idle"), "err", "idle", e.message); // a 400 may be about any plugin setting
+      if (e.kind === "hdr" || e.kind === "ban") load(); // the banner it points to
+      if (!(e.net && sent)) renderSettings(true); // "may have saved": keep showing what was picked
+      if (e.net && sent) settle(function () { // the list carries the saved value
+        renderSettings(true);
+        sMsg(S.idle === n ? "Saved." : "Not saved; retry.", S.idle === n ? "" : "err", "idle");
+      });
+    });
   }
 
-  /* ---------- form ---------- */
-  function setFormMsg(text, kind) {
-    var m = $("formmsg");
-    m.textContent = text || "";
-    m.className = "msg" + (kind ? " " + kind : "");
-    m.style.margin = "0";
+  /* ---------- Hugging Face ---------- */
+  // Read in the browser: Hugging Face's API allows any origin. hfGet resolves to [status, JSON (or
+  // text)]; status 0 when Hugging Face couldn't be reached.
+  function hfGet(path, text) {
+    var ctl = new AbortController();
+    setTimeout(function () { ctl.abort(); }, 15000);
+    return fetch(HF + path, { signal: ctl.signal }).then(function (r) {
+      return r.text().then(function (t) {
+        if (text || !r.ok) return [r.status, t];
+        try { return [r.status, JSON.parse(t)]; } catch (e) { return [r.status, null]; }
+      });
+    }, function () { return [0, null]; });
+  }
+  // PARSERS: [test on repo id + model_type, tool parser, reasoning parser], from vLLM's
+  // tool_calling.md and reasoning_outputs.md and its parser registries. A guess; unknown families get none.
+  var PARSERS = [
+    [/qwen3[._-]?coder/i, "qwen3_xml", ""], [/qwen3\.[5-9]|qwen3_[5-9]/i, "qwen3_coder", "qwen3"], [/qwen3/i, "hermes", "qwen3"],
+    [/qwq/i, "hermes", "deepseek_r1"], [/qwen2/i, "hermes", ""],
+    [/glm-?4\.[789]|glm-?5|glm_moe_dsa/i, "glm47", "glm45"], [/glm4_moe|glm-?4\.[56]/i, "glm45", "glm45"],
+    [/gigachat/i, "gigachat3", ""], [/deepseek.*v4\.1|deepseek_v41/i, "deepseek_v41", "deepseek_v41"], [/deepseek.*v4|deepseek_v4/i, "deepseek_v4", "deepseek_v4"],
+    [/deepseek.*v3\.2|deepseek_v32/i, "deepseek_v32", "deepseek_v3"], [/deepseek.*(v3\.1|v3_?1)/i, "deepseek_v31", "deepseek_v3"],
+    [/deepseek.*r1/i, "deepseek_v3", "deepseek_r1"], [/deepseek_v3/i, "deepseek_v3", ""],
+    [/kimi.*k3|kimi_k3/i, "kimi_k3", "kimi_k3"], [/kimi.*(thinking|k2\.[5-9])/i, "kimi_k2", "kimi_k2"], [/kimi/i, "kimi_k2", ""], [/gpt[-_]?oss/i, "openai", ""],
+    [/minimax.*m3|minimax_m3/i, "minimax_m3", "minimax_m3"], [/minimax/i, "minimax_m2", "minimax_m2"], [/gemma-?4/i, "gemma4", "gemma4"],
+    [/nemotron-nano-(9b|12b)-v2|nemotron-super-49b/i, "", ""], [/nemotron_?h/i, "qwen3_coder", "nemotron_v3"], [/step-?3\.5|step3p5/i, "step3p5", "step3p5"], [/mimo/i, "mimo", "mimo"],
+    [/seed[-_]?oss/i, "seed_oss", "seed_oss"], [/hunyuan.*a13b|hunyuan_v1_moe/i, "hunyuan_a13b", "hunyuan_a13b"], [/olmo-?3/i, "olmo3", "olmo3"],
+    [/granite-?4\.[2-9]/i, "granite_toolcall_parser", "granite_thinking_parser"], [/granite-?4/i, "granite4", ""], [/hermes/i, "hermes", ""], [/llama-?4/i, "llama4_json", ""],
+    [/ling-?3|ling3/i, "ling3", "ling3"], [/ernie-?4\.?5|ernie4_5/i, "ernie45", "ernie45"], [/phi-?4-?mini/i, "phi4_mini_json", ""], [/north-mini/i, "cohere_command4", "cohere_command4"], [/lfm2/i, "lfm2", ""],
+    [/step-?3\.7|step3p7/i, "step3p5", "step3p5"], [/apertus/i, "apertus", ""], [/zaya/i, "zaya", "zaya"], [/minicpm-?5/i, "minicpm5", ""],
+    [/hy[-_]?v?4|hunyuan.*4/i, "hy_v4", "hy_v4"], [/hy[-_]?v?3|hunyuan.*3/i, "hy_v3", "hy_v3"], [/laguna/i, "poolside_v1", "poolside_v1"], [/longcat/i, "longcat", ""], [/k2-?horizon|jais-?3/i, "k2_horizon", "k2_horizon"], [/inkling/i, "inkling", "inkling"],
+    [/command-?a-?plus/i, "cohere_command4", "cohere_command4"], [/command-?a-?reasoning/i, "cohere_command3", "cohere_command3"], [/ripple/i, "ripple", "ripple"], [/dots[._-]?(llm|3)|dots3/i, "dots", ""], [/muse[-_]?glimmer/i, "muse_glimmer", "muse_glimmer"], [/muse[-_]?spark/i, "muse", "muse"], [/\bbeam-?\d/i, "beam", "beam"],
+    [/llama/i, "llama3_json", ""], [/magistral|ministral.*reason|mistral-medium-3\.5|mistral-small-4/i, "mistral", "mistral"], [/mistral|devstral/i, "mistral", ""]
+  ];
+  // vLLM's tool_parsers and reasoning registries (main), as suggestions.
+  var TOOL_PARSERS = "dots granite-20b-fc deepseek_v3 deepseek_v31 deepseek_v32 deepseek_v4 deepseek_v41 cohere_command3 cohere_command4 ernie45 glm45 glm47 ling3 granite granite4 granite_toolcall_parser hermes hf beam poolside_v1 hunyuan_a13b hy_v3 hy_v4 internlm jamba lfm2 kimi_k2 kimi_k3 k2_horizon llama3_json llama4_json llama4_pythonic longcat mimo minimax_m2 minimax_m3 minicpm5 mistral olmo3 plamo3 muse muse_glimmer musespark openai phi4_mini_json pythonic qwen3_coder qwen3_json qwen3_xml ripple seed_oss step3 step3p5 step5 inkling xlam gigachat3 functiongemma gemma4 apertus zaya zaya_xml";
+  var REASON_PARSERS = "deepseek_r1 deepseek_v3 deepseek_v4 deepseek_v41 poolside_v1 cohere_command3 cohere_command4 ernie45 gemma4 glm45 glm47 ling3 openai_gptoss granite granite_thinking_parser hf beam holo2 hunyuan_a13b hy_v3 hy_v4 kimi_k2 kimi_k3 k2_horizon mimo minicpmv minimax_m2 minimax_m2_append_think minimax_m3 mistral nemotron_v3 olmo3 plamo3 muse muse_glimmer musespark qwen3 ripple seed_oss step3 step3p5 step5 inkling zaya";
+  $("tool-parsers").innerHTML = TOOL_PARSERS.split(" ").map(function (p) { return '<option value="' + p + '">'; }).join("");
+  $("reason-parsers").innerHTML = REASON_PARSERS.split(" ").map(function (p) { return '<option value="' + p + '">'; }).join("");
+  // QUANTS are the quantization values DeepInfra's deploy API accepts; blank lets vLLM read the repo's.
+  var QUANTS = ["fp8", "awq", "gptq", "awq_marlin", "gptq_marlin", "compressed-tensors", "bitsandbytes"];
+  var BYTES = { F64: 8, F32: 4, I32: 4, BF16: 2, F16: 2, I16: 2 };
+  // weightGB is the size of the repo's top-level .safetensors files, else an estimate from Hugging
+  // Face's parameter counts (too high for packed quantized repos).
+  function weightGB(tree, st) {
+    var b = 0;
+    var files = (Array.isArray(tree) ? tree : []).filter(function (f) { return f.type === "file" && /^[^\/]+\.safetensors$/.test(f.path); });
+    // Mistral repos ship the same weights twice: consolidated*.safetensors and model-*.safetensors.
+    if (files.some(function (f) { return !/^consolidated/.test(f.path); })) files = files.filter(function (f) { return !/^consolidated/.test(f.path); });
+    files.forEach(function (f) { b += (f.lfs && f.lfs.size) || f.size || 0; });
+    if (!b) { var p = (st && st.parameters) || {}; Object.keys(p).forEach(function (k) { b += p[k] * (BYTES[k] || 1); }); }
+    return b / 1e9;
+  }
+  // kvGB is the fp8 KV cache per token (diCreateBody sets kv_cache_dtype fp8), in GB.
+  function kvGB(c) {
+    c = c.text_config || c;
+    var layers = c.num_hidden_layers || c.num_layers || 0; // LongCat says num_layers
+    if (c.kv_lora_rank) return layers * (c.kv_lora_rank + (c.qk_rope_head_dim || 64)) / 1e9 || 0; // MLA
+    // Sliding-window and linear-attention layers keep a small fixed cache, so only full-attention layers count.
+    var L = Array.isArray(c.layer_types) ? c.layer_types.filter(function (t) { return t === "full_attention" || t === "attention"; }).length
+      : c.full_attention_interval ? Math.ceil(layers / c.full_attention_interval) : layers;
+    var kv = c.num_global_key_value_heads || c.num_key_value_heads || c.num_attention_heads, hd = c.global_head_dim || c.head_dim || (c.hidden_size && c.num_attention_heads ? c.hidden_size / c.num_attention_heads : 0);
+    return L && kv && hd ? 2 * L * kv * hd / 1e9 : 0;
+  }
+  function maxCtx(c) { var t = c.text_config || {}; return c.max_position_embeddings || t.max_position_embeddings || t.model_max_length || c.max_sequence_length || c.seq_length || 0; }
+  function mtpLayers(c) { var t = c.text_config || {}; return c.num_nextn_predict_layers || c.mtp_num_hidden_layers || t.num_nextn_predict_layers || t.mtp_num_hidden_layers || (c.mtp_config ? c.mtp_config.num_nextn_predict_layers || c.mtp_config.num_layers || 1 : 0); } // Inkling: mtp_config
+  // repoOf takes a repo id or a pasted Hugging Face URL.
+  // repoOf takes a repo id, a pasted Hugging Face URL, or a pasted command ("vllm serve Owner/Name").
+  // chat says whether a Hugging Face task can serve chat (embedding, reranking and speech repos can't).
+  function chat(tag) { return !tag || /text-generation|image-text-to-text|any-to-any|text2text|conversational|video-text-to-text/.test(tag); }
+  function repoOf(v) {
+    var py = /\b(?:model|from_pretrained|pipeline|LLM)\b[^"']*["']([\w.-]+\/[\w.-]+)["']/.exec(v); // LLM(model="…"), from_pretrained("…")
+    if (py) return py[1];
+    // A snippet that names the repo in a variable first (model_name = "Owner/Name"), not a command line.
+    var quoted = !/(^|\s)(vllm|hf|huggingface-cli|git|docker|uvx?|sglang)\s/.test(v) && /["']([\w.-]+\/[\w.-]+)["']/.exec(v);
+    if (quoted) return quoted[1];
+    var t = v.trim().replace(/["'\\`*\u201c\u201d\u2018\u2019]/g, "").replace(/\.git\b/g, "").replace(/^(\$\s*|sudo\s+|[A-Z_][A-Z0-9_]*=\S*\s+)+/, "").replace(/^[(\[<]+/, ""); // a prompt, sudo, VAR=value, an opening bracket
+    var u = t.replace(/^.*?(?:(https?:\/\/|git@)?(www\.)?(huggingface\.co|hf\.co)[\/:]|\bhf:\/\/)/, ""); // URLs, git@hf.co:owner/name and hf://owner/name
+    if (u !== t && /^(spaces|datasets)\//.test(u)) return t; // not a model
+    var m = u !== t && /^([\w.-]+)\/([\w.-]+)/.exec(u); // a pasted URL: just owner/name, whatever follows (an ollama :tag, punctuation)
+    if (m) return m[1] + "/" + m[2].replace(/\.+$/, ""); // a URL ending a sentence
+    var ids = t.replace(/--local-dir[=\s]+\S+/g, "").split(/\s+/).map(function (w) { return w.replace(/[?#].*$/, ""); })
+      .filter(function (w) { return /^[\w.-]+\/[\w.-]+$/.test(w) && !/^[.~]/.test(w); }); // not a ./path
+    if (/docker\s+run/.test(t) && ids.length > 1) ids = ids.slice(1); // the first is the image
+    var cmd = /(^|\s|:)(vllm|hf|huggingface-cli|git|docker|python3?|uvx?|pip|sglang)\s/.test(t); // a search like "qwen/qwen3 coder" stays a search
+    // The repo: after --model, else after the verb (not an image name or a --local-dir ./path).
+    var after = /--model(?:-path)?(?:=|\s+)([\w.-]+\/[\w.-]+)/.exec(t) || /(?:serve|download|clone)\s+([\w][\w.-]*\/[\w.-]+)/.exec(t);
+    if (cmd && (after || ids.length)) return after ? after[1] : ids[0];
+    var bare = /^([\w.-]+)\/([\w.-]+?)[.!?,;:)\]>]*$/.exec(t); // owner/name with trailing punctuation
+    return bare ? bare[1] + "/" + bare[2] : /\s/.test(t) ? t : t.replace(/[?#].*$/, "").replace(/\/+$/, "");
   }
 
-  function json(v) { return v ? JSON.stringify(v) : ""; }
+  var hfSeq = 0, opts = [], hi = -1, hfTimer = 0, defHi = -1, skipId = "", stopHold = ""; // skipId: a stopped repo its sibling search leaves out
+  var chose = false, stale = false, enterNext = false; // arrowed or hovered to a result; typed since the results came; an Enter waits
+  $("q").addEventListener("input", function () { skipId = ""; clearTimeout(hfTimer); chose = false; stale = true; enterNext = false; hfTimer = setTimeout(search, 220); });
+  $("q").addEventListener("keydown", function (e) {
+    if (e.key === "ArrowDown" && !opts.length && repoOf(this.value).length >= 2) { e.preventDefault(); search(); }
+    else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && opts.length) { e.preventDefault(); chose = true; hi = Math.max(0, Math.min(opts.length - 1, hi + (e.key === "ArrowDown" ? 1 : -1))); paintResults(); }
+    else if (e.key === "Enter") {
+      e.preventDefault();
+      var v = repoOf(this.value), typed = /^[^\/\s]+\/[^\/\s]+$/.test(v);
+      if (stale && !chose && !typed) { clearTimeout(hfTimer); enterNext = true; search(); } // the results are for older text: pick when the new ones come
+      else if (!$("res").hidden && opts[hi] && (chose || !typed)) pick(opts[hi].id); else if (typed) pick(v); // a typed owner/name means that repo
+    }
+    else if (e.key === "Escape" && !$("res").hidden) { e.preventDefault(); e.stopPropagation(); closeResults(); if (hf && !editing) this.value = $("f-repo").value; } // back to the repo the form is for
+  });
+  $("q").addEventListener("blur", function () { if (!$("res").hidden && hf && !editing) this.value = $("f-repo").value; closeResults(); });
+  function dimResults(repo) {
+    var res = $("res");
+    res.inert = true; res.classList.add("dim");
+    Array.prototype.forEach.call(res.children, function (o) { var me = o.getAttribute("data-id").toLowerCase() === repo.toLowerCase(); o.setAttribute("aria-selected", String(me)); if (me) o.lastChild.textContent = "Reading…"; });
+    $("q").setAttribute("aria-expanded", "false"); $("q").removeAttribute("aria-activedescendant");
+  }
+  function closeResults() { $("res").inert = false; $("res").classList.remove("dim"); opts = []; $("res").hidden = true; $("q").setAttribute("aria-expanded", "false"); $("q").removeAttribute("aria-activedescendant"); }
+  var searchingT = 0;
+  function search(keepMsg) {
+    var q = repoOf($("q").value), n = ++hfSeq;
+    if (q.length < 2) { closeResults(); return dMsg(""); } // otherwise the old results stay until the new ones replace them
+    clearTimeout(searchingT);
+    if ($("res").hidden && !keepMsg) searchingT = setTimeout(function () { if (n === hfSeq) dMsg("Searching…"); }, 400); // with results showing, they stay until replaced
+    var done0 = function () { clearTimeout(searchingT); };
+    fetch(HF + "/api/models?search=" + encodeURIComponent(q.replace(/[\s-]+(gguf|mlx|exl[23])\b/gi, "")) + "&limit=60&sort=downloads&expand[]=downloads&expand[]=gated&expand[]=tags&expand[]=pipeline_tag").then(function (r) { if (!r.ok) throw r; return r.json(); }).then(function (d) {
+      if (n !== hfSeq || repoOf($("q").value) !== q) return; // for text that has since changed
+      done0();
+      stale = false;
+      if (stopHold) { stopHold = ""; $("form").style.minHeight = ""; $("form").classList.remove("held"); }
+      // Only repos the page would add: no GGUF/MLX, base models, draft models or test stubs.
+      var ids = (Array.isArray(d) ? d : []).map(function (m) { return m.id; });
+      var tagOf = function (m, re) { var t = (m.tags || []).filter(function (x) { return re.test(x); })[0]; return t ? t.split(":").pop() : ""; };
+      var baseOf = function (m) { return tagOf(m, /^base_model:quantized:/); }; // a quant of a listed repo
+      var finetuneOf = function (m) { return tagOf(m, /^base_model:(finetune:)?[^:]+\/[^:]+$|^base_model:finetune:/); }; // what a listed repo was tuned from
+      var dashed0 = q.toLowerCase().replace(/\s+/g, "-"), baseHit = (Array.isArray(d) ? d : []).filter(function (m) { return /-base$/i.test(m.id) && m.id.split("/")[1].toLowerCase() === dashed0; })[0]; // asked for by name
+      opts = (Array.isArray(d) ? d : []).filter(function (m) { return !(keepMsg === true && m.gated) && !/gguf|mlx|exl[23]|\d(\.\d+)?bpw|-base$|-\d+b-pt$|eagle|dflash|dspark|draft|specul|tiny-random|-assistant$/i.test(m.id) && chat(m.pipeline_tag) && !/embed|rerank/i.test(m.id.split("/")[1]) && !(!m.pipeline_tag && /(^|[-_])(asr|tts)([-_]|$)/i.test(m.id.split("/")[1])) && !(m.tags || []).some(function (t) { return /^(mlx|gguf|exl2|exl3)$/i.test(t); }); }); // formats vLLM can't load
+      // A build of a listed repo (a quant, a fine-tune, a port) goes after it, so Enter picks the original.
+      ids = opts.map(function (m) { return m.id; }); // listed here, not a filtered-out base model
+      var build = function (m) { var f = finetuneOf(m), b = baseOf(m), own = m.id.split("/")[0]; return ids.indexOf(b) >= 0 && b.split("/")[0] !== own || ids.indexOf(f) >= 0 && f.split("/")[0] !== own; }; // a quant, or someone else's fine-tune
+      opts = (baseHit ? [baseHit] : []).concat(opts.filter(function (m) { return !build(m); }), opts.filter(build)).filter(function (m) { return m.id.toLowerCase() !== skipId; }).slice(0, 8); // not the repo that just stopped
+      var exact = opts.map(function (m) { return m.id.toLowerCase(); }).indexOf(q.toLowerCase());
+      var dashed = q.toLowerCase().replace(/\s+/g, "-"); // "qwen3 8b" means Qwen3-8B
+      var chatty = function (m) { return !!m.pipeline_tag || (m.tags || []).indexOf("vllm") >= 0; }; // Mistral's repos have no task tag
+      if (exact < 0) exact = opts.map(function (m) { return chatty(m) ? m.id.split("/")[1].toLowerCase() : ""; }).indexOf(dashed); // a name typed without its owner (a tagged repo, not someone's bundle)
+      if (baseHit) exact = 0; // "qwen3 8b base": that repo, to stop on with its chat versions
+      // A base model whose maker's chat tune is also listed (gemma-4-31B and gemma-4-31B-it): the tune is the default.
+      var chatTune = function (i) {
+        var bn = opts[i].id.toLowerCase();
+        return opts.map(function (m, j) { return finetuneOf(m) === opts[i].id && m.id.toLowerCase().indexOf(bn) === 0 && /^-(it|instruct|chat)\b/.test(m.id.toLowerCase().slice(bn.length)) ? j : -1; }).filter(function (j) { return j >= 0; })[0];
+      };
+      if (exact >= 0 && opts[exact].id.toLowerCase() !== q.toLowerCase() && chatTune(exact) != null) exact = chatTune(exact); // named, not typed in full
+      var task = function (m) { var w = /(ocr|guard|reward|embed\w*|rerank\w*|video|tts|asr)(?=$|[-_.])|(?:^|[-_.])(vl)(?=$|[-_.])/i.exec(m.id.split("/")[1]); return w && q.toLowerCase().indexOf((w[1] || w[2]).toLowerCase()) < 0; }; // HunyuanOCR, Qwen3Guard, -VL
+      var plainQ = function (m) { return !task(m) && !/[-_.](awq|gptq|fp8|fp4|nvfp4|mxfp4|int[48]|w[48]a\d+|bnb|\d+-?bit|aqlm|hqq)\b/i.test(m.id); }, nm = function (m) { return m.id.split("/")[1].toLowerCase(); };
+      var tiers = [function (m) { return nm(m).indexOf(dashed) === 0 && chatty(m) && plainQ(m) && !build(m); }, function (m) { return nm(m).indexOf(dashed) === 0 && nm(m) !== dashed && plainQ(m) && !build(m); }, function (m) { return nm(m).indexOf(dashed) === 0 && chatty(m) && plainQ(m); }, function (m) { return chatty(m) && plainQ(m); }]; // the maker's own before others' builds
+      var first = 0;
+      if (keepMsg !== true) for (var ti = 0; ti < tiers.length; ti++) { var fi = opts.map(tiers[ti]).indexOf(true); if (fi >= 0) { first = fi; break; } } // what was typed, from its maker, before others' builds // a tagged chat repo the query asked for, not a quantized copy (gated copies: as listed)
+      hi = exact >= 0 ? exact : /^[^\/\s]+\/[^\/\s]+$/.test(q) ? -1 : opts.length && chatTune(first) != null ? chatTune(first) : first; // an exact match first; a typed id that isn't listed, nothing
+      defHi = hi;
+      if (!opts.length) closeResults();
+      if (keepMsg === true && !opts.length) dMsg("Gated, no ungated copy; pick another.", "err");
+      if (!keepMsg) dMsg(opts.length || /^[^\/\s]+\/[^\/\s]+$/.test(q) ? "" : "No match; type owner/name, then Enter."); // a stop's message stays over the list it offers; an owner/name reads on Enter
+      if (enterNext) { enterNext = false; if (opts[hi]) return pick(opts[hi].id); }
+      paintResults();
+    }, function (r) { done0(); if (n === hfSeq && stopHold) { stopHold = ""; $("form").style.minHeight = ""; $("form").classList.remove("held"); } if (n === hfSeq) stale = true; if (n === hfSeq && $("res").inert) closeResults(); if (n === hfSeq) { var fm = r && r.status === 429 ? "Hugging Face rate limit; retry in a minute." : "Hugging Face unreachable; type owner/name."; if ($("d-msg").textContent === fm) { dMsg(""); setTimeout(function () { dMsg(fm, "err"); }); } else dMsg(fm, "err"); } }); // the same failure again is said again
+  }
+  function dl(n) { return n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(n || 0); }
+  function paintResults() {
+    var res = $("res");
+    res.inert = false; res.classList.remove("dim");
+    res.hidden = !opts.length;
+    $("d-search").classList.toggle("over", !!hf && !editing); // searching again: the results float over the form
+    $("q").setAttribute("aria-expanded", String(!!opts.length));
+    res.innerHTML = opts.map(function (m, i) {
+      return '<div class="opt" role="option" id="o' + i + '" aria-selected="' + (i === hi) + '" data-id="' + esc(m.id) + '"><span class="id">' + esc(m.id) + '</span><span class="r">' + (m.gated ? "gated" : '<span aria-hidden="true">↓</span>' + dl(m.downloads) + '<span class="sr"> downloads</span>') + "</span></div>";
+    }).join("");
+    if (opts[hi]) {
+      $("q").setAttribute("aria-activedescendant", "o" + hi);
+      var ob = $("o" + hi).getBoundingClientRect(), rb = res.getBoundingClientRect();
+      if (res.scrollHeight > res.clientHeight) { if (ob.top < rb.top) res.scrollTop -= rb.top - ob.top; else if (ob.bottom > rb.bottom) res.scrollTop += ob.bottom - rb.bottom; } // floating: only the list scrolls, so the box stays in view
+      else $("o" + hi).scrollIntoView({ block: "nearest" });
+    }
+    else $("q").removeAttribute("aria-activedescendant");
+  }
+  $("d-msg").addEventListener("focus", function () { this.style.setProperty("--lines", Math.max(2, Math.floor(($("foot").getBoundingClientRect().top - Math.max(0, dlg.getBoundingClientRect().top) - 26) / 18))); }); // the overlay fits above the footer, its start in view
+  $("res").addEventListener("mousedown", function (e) { e.preventDefault(); }); // keep focus in the box
+  $("form").addEventListener("mousedown", function (e) { if (e.detail > 1 && !e.target.closest("input, textarea")) e.preventDefault(); });
+  $("res").addEventListener("mousemove", function (e) { // one highlight: the hovered result is the selected one
+    var o = e.target.closest("[data-id]"), i = o ? Number(o.id.slice(1)) : -1;
+    if (i >= 0 && i !== hi) { hi = i; chose = true; paintResults(); }
+  });
+  $("res").addEventListener("click", function (e) { var o = e.target.closest("[data-id]"); if (o) pick(o.getAttribute("data-id")); });
 
-  function startEdit(m) {
-    state.editing = m.id;
-    $("f-id").value = m.id;
-    $("f-id").readOnly = true;
+  // hfInfo reads what the form fills in from a repo; any part may be missing.
+  function hfInfo(repo) {
+    var enc = repo.split("/").map(encodeURIComponent).join("/");
+    return Promise.all([
+      hfGet("/api/models/" + enc + "?expand[]=safetensors&expand[]=config&expand[]=sha&expand[]=gated&expand[]=tags&expand[]=pipeline_tag"),
+      hfGet("/" + enc + "/resolve/main/config.json"),
+      hfGet("/" + enc + "/resolve/main/generation_config.json"),
+      hfGet("/api/models/" + enc + "/tree/main")
+    ]).then(function (r) { // no config.json: Mistral's own params.json says the size and context
+      return r[1][0] !== 404 ? r : hfGet("/" + enc + "/resolve/main/params.json").then(function (x) {
+        var q = x[1] && typeof x[1] === "object" ? x[1] : null;
+        if (q) r[1] = [200, { max_position_embeddings: q.max_position_embeddings || q.max_seq_len, num_hidden_layers: q.n_layers, num_attention_heads: q.n_heads, num_key_value_heads: q.n_kv_heads, head_dim: q.head_dim, hidden_size: q.dim, kv_lora_rank: q.kv_lora_rank, qk_rope_head_dim: q.qk_rope_head_dim }];
+        return r;
+      });
+    }).then(function (r) {
+      var info = r[0][1] && typeof r[0][1] === "object" ? r[0][1] : {}, c = r[1][1] && typeof r[1][1] === "object" ? r[1][1] : {};
+      var fam = repo + " " + ((info.config || {}).model_type || c.model_type || "");
+      var par = PARSERS.filter(function (p) { return p[0].test(repo); })[0] || PARSERS.filter(function (p) { return p[0].test(fam); })[0] || [0, "", ""]; // the name first
+      var toolTip = /deepseek.*v3\.1/i.test(repo) ? "DeepSeek-V3.1's own chat template has no tools; vLLM's tool template can't be set here." : "";
+      if (toolTip) par = [0, "", par[2]];
+      var q = c.quantization_config || (c.text_config || {}).quantization_config || {};
+      var tmpl = ((info.config || {}).tokenizer_config || {}).chat_template || "";
+      tmpl = typeof tmpl === "string" ? tmpl : JSON.stringify(tmpl);
+      var files = (Array.isArray(r[3][1]) ? r[3][1] : []).map(function (f) { return f.path; }), tags = info.tags || []; // top-level files and folders
+      var mt = (info.config || {}).model_type || c.model_type || "";
+      var h = {
+        status: r[0][0], found: r[0][0] === 200, limited: r.some(function (x) { return x[0] === 429; }),
+        noSafetensors: tags.indexOf("mlx") >= 0 || (files.length > 0 && !files.some(function (f) { return /\.safetensors$/.test(f); })),
+        // Sparse-attention and the newest MoE families need Hopper or newer, so A100s aren't pre-picked.
+        hopper: !!(c.index_topk || (c.text_config || {}).index_topk) || /kimi_k3|minimax_m3/.test(mt), sha: info.sha || "", gated: !!info.gated, weights: weightGB(r[3][1], info.safetensors), kv: kvGB(c), max: maxCtx(c),
+        exl: /exl[23]|\d(\.\d+)?bpw/i.test(repo), // EXL2/EXL3: vLLM can't load them
+        original: ((tags.filter(function (t) { return /^base_model:quantized:/.test(t); })[0] || "").split(":")[2] || ""), // a GGUF's safetensors original
+        target: ((c.speculators_config || {}).verifier || {}).name_or_path || ((tags.filter(function (t) { return /^base_model:[^:]+\/[^:]+$/.test(t); })[0] || "").split(":")[1] || ""), // a draft's target model
+        quant: q.quant_method || q.quant_algo || "", toolTip: toolTip, mt: mt, id: info.id || "", chat: chat(info.pipeline_tag) && !/embed|rerank/i.test(repo.split("/")[1]) && !(!info.pipeline_tag && /(^|[-_])(asr|tts)([-_]|$)/i.test(repo.split("/")[1])), tool: par[1], reason: par[2], gen: r[2][1] && typeof r[2][1] === "object" ? r[2][1] : {}, mtp: mtpLayers(c), tmpl: tmpl
+      };
+      var name = repo.split("/")[1];
+      // No known family: a repo that declares its own response format uses vLLM's "hf" parsers.
+      var hfParse = h.found && !h.tool && !h.reason ? hfGet("/" + enc + "/resolve/main/tokenizer_config.json").then(function (x) {
+        if (x[1] && typeof x[1] === "object" && x[1].response_template) h.tool = h.reason = "hf";
+      }) : Promise.resolve();
+      // A gated repo: find the most-downloaded ungated copy with the same name.
+      var copy = !h.gated ? Promise.resolve(null) : hfGet("/api/models?search=" + encodeURIComponent(name) + "&limit=20&sort=downloads&filter=safetensors&expand[]=gated").then(function (x) {
+        var bare = function (n) { return n.toLowerCase().replace(/^meta-/, ""); }; // unsloth/Meta-Llama-3.1-… copies meta-llama/Llama-3.1-…
+        // Only from known re-uploaders: anyone can upload a copy, and the page switches to it by itself.
+        h.copy = ((Array.isArray(x[1]) ? x[1] : []).filter(function (m) { return !m.gated && /^(unsloth|RedHatAI|nvidia|neuralmagic)\//.test(m.id) && bare(m.id.split("/")[1]) === bare(name); })[0] || {}).id || "";
+      });
+      // Qwen3-Next keeps an MTP layer that config.json doesn't mention; its weight index lists it.
+      var mtpIdx = /qwen3_next/.test(mt) && !h.mtp ? hfGet("/" + enc + "/resolve/main/model.safetensors.index.json").then(function (x) {
+        if (x[1] && x[1].weight_map && Object.keys(x[1].weight_map).some(function (k) { return k.indexOf("mtp.") === 0; })) h.mtp = 1;
+      }) : Promise.resolve();
+      // Newer repos keep the chat template in its own file.
+      return Promise.all([copy, hfParse, mtpIdx]).then(function () { return tmpl || !h.found ? [0, ""] : hfGet("/" + enc + "/resolve/main/chat_template.jinja", true); }).then(function (t) {
+        if (typeof t[1] === "string" && t[0] === 200) h.tmpl = t[1];
+        // Llama 4 repos differ: some templates ask for JSON calls, others for pythonic [f(a=1)] ones.
+        if (h.tool === "llama4_json" && /\[func_name1\(/.test(h.tmpl)) h.tool = "llama4_pythonic";
+        // Without a chat template vLLM refuses chat requests, unless it renders the family itself.
+        h.isBase = /-base$|-\d+b-pt$/i.test(repo);
+        h.noTemplate = h.found && h.isBase || h.found && !h.tmpl && !files.some(function (f) { return /^(chat_template\.json|tekken\.json|params\.json)$/.test(f); }) && !/deepseek_v(32|4|41)|kimi_k3|inkling/.test(mt);
+        h.dspark = files.indexOf("dspark") >= 0 || /deepseek_v41/.test(mt); // a built-in DSpark drafter (MiniMax M3.x; DeepSeek V4.1, where vLLM refuses mtp)
+        // The plugin turns thinking off with enable_thinking, which these templates and vLLM's
+        // DeepSeek V3.2/V4 renderers read; for other reasoning models it's left on (the box is hidden).
+        // A template that never mentions thinking (Qwen3 Instruct-2507, Qwen3-Next-Instruct) has no reasoning to parse;
+        // the qwen3 parser would put the whole reply in reasoning.
+        // A family the table doesn't know: read the call format from its template.
+        if (!h.tool && /<arg_key>/.test(h.tmpl)) { h.tool = "glm47"; h.guessed = true; } // GLM's call format
+        if (!h.tool && /<tool_call>/.test(h.tmpl)) { h.tool = /<function=/.test(h.tmpl) ? "qwen3_coder" : "hermes"; h.guessed = true; }
+        if (!h.reason && /<think>/.test(h.tmpl)) { h.reason = "qwen3"; h.guessed = true; }
+        if (!h.tool && h.found && !h.toolTip && /tools/.test(h.tmpl)) h.toolTip = "No tool parser is known for this family; set one under Advanced if it calls tools.";
+        if (/qwen3|ernie/i.test(repo + " " + mt) && h.tmpl && !/think/i.test(h.tmpl)) h.reason = "";
+        if (/qwen3|ernie/i.test(repo + " " + mt) && h.tmpl && !/tool/i.test(h.tmpl)) h.tool = ""; // e.g. ERNIE-4.5 -PT: tool calls would come back as text either way
+        h.think = /enable_thinking/.test(h.tmpl) || /deepseek_v(32|4)|kimi_k3/.test(mt); // vLLM renders these itself and reads it
+        // The default is what the template does when the setting is left out: on unless it only
+        // turns on when asked. With the box hidden it's sent as is, so match the template's own
+        // default (DeepSeek-V3.1: "set thinking = false"; Kimi: on unless "thinking is false").
+        var t = h.tmpl;
+        // vLLM's DeepSeek V3.2 renderer thinks only when asked.
+        h.thinkOn = /deepseek_v32/.test(mt) ? false : h.think ? /enable_thinking[^%]*else true|default\(\s*true|enable_thinking is undefined or|set enable_thinking = true/i.test(t) || !/enable_thinking is defined and enable_thinking is true|enable_thinking\s*==\s*true|enable_thinking\s*\|\s*default\(\s*false|enable_thinking is defined and enable_thinking\s*-?%\}|if enable_thinking\s*-?%\}/.test(t)
+          : /set thinking = false|if not thinking is defined/.test(t) ? false : /\bthinking\b/.test(t) ? true : !!h.reason;
+        return h;
+      });
+    });
+  }
+
+  /* ---------- add / edit dialog ---------- */
+  var dlg = $("dlg"), editing = null, hf = null, pickSeq = 0, showAll = 0;
+  var GEN = [["temperature", "Temperature"], ["top_p", "Top p"], ["top_k", "Top k"], ["presence_penalty", "Presence penalty"],
+    ["min_p", "Min p"], ["repetition_penalty", "Repetition penalty"], ["frequency_penalty", "Frequency penalty"], ["max_new_tokens", "Max output tokens"]];
+  $("f-samp").innerHTML = GEN.map(function (g, i) { return '<div class="more"><label for="g-' + g[0] + '">' + g[1] + '</label><input id="g-' + g[0] + '" type="number" step="any"></div>'; }).join("");
+
+  function dMsg(text, kind, tip) {
+    set($("d-msg"), "textContent", text || "");
+    set($("d-msg"), "className", "msg" + (kind ? " " + kind : ""));
+    var norm = function (x) { return String(x || "").toLowerCase().replace(/\.$/, ""); };
+    set($("d-msg"), "title", tip && norm(tip) !== norm(text) ? tip : ""); // the raw reply, when it says more
+    var dm = $("d-msg"); dm.setAttribute("data-full", text || "");
+    if (dm.scrollHeight > dm.clientHeight + 1) dm.tabIndex = 0; else dm.removeAttribute("tabindex"); // cut off: focusable, to read it whole
+
+  }
+  var addAfterKey = false; // Add asked for the DeepInfra key first
+  var draftBody = null, draftMsg = ""; // an add to bring back, and what happened to it
+  var draft = ""; // the add form or the model id whose edit a rejected key interrupted
+  // showDlg opens the dialog with the status region inside it: the page behind is inert, so it'd go unheard.
+  var lostAdd = ""; // the ID of an add whose reply was lost, until a load says what happened
+  var editOwn = null; // Edit: the model's own problem, in place of the size line until a GPU changes
+  var dlgSession = 0; // bumped on each open, so a late reply knows whether its dialog is still there
+  new ResizeObserver(function () { dlg.style.scrollPaddingBottom = $("foot").offsetHeight + 8 + "px"; }).observe($("foot")); // a focused field stays clear of the footer, whatever it shows
+  function showDlg() { dlgSession++; $("announce").textContent = ""; dlg.appendChild($("announce")); if (!dlg.open) dlg.showModal(); } // emptied first, so an old message isn't said again
+  function openAdd() {
+    $("f-id").title = "";
+    set($("f-why"), "textContent", ""); set($("f-why"), "title", ""); // not the last dialog's line, in this one's description
+    if (S.loaded && !S.apiKeySet) { addAfterKey = true; return openSettings(true); } // nothing can be added without it
+    var back = draft === "add" && draftBody, msg = draftMsg; // an add that wasn't saved comes back filled
+    draft = ""; draftBody = null; draftMsg = "";
+    editing = null; hf = null; showAll = 0; flags = {}; sampOpen = false; $("adv").open = false;
+    $("d-title").textContent = "Add model";
+    $("d-title").title = "";
+    $("save").textContent = "Add model";
+    $("remove").hidden = true;
+    $("d-search").hidden = false;
+    $("d-body").hidden = true;
+    $("foot").hidden = false;
+    $("save").hidden = $("cancel").hidden = true;
+    $("f-id").readOnly = false;
+    $("f-id-box").classList.remove("full");
+    $("f-repo-box").hidden = true; // the search box is the repo
+    $("q").value = "";
+    closeResults();
+    dMsg("");
+    showDlg();
+    if (back) {
+      $("q").value = back.hf_repo;
+      fill(back);
+      $("d-body").hidden = $("save").hidden = $("cancel").hidden = false;
+      if (msg) dMsg(msg, "err");
+      return focusQuiet($("save"));
+    }
+    $("q").focus();
+  }
+  $("add").addEventListener("click", openAdd);
+
+  function freeId(base) {
+    var id = base.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^[^a-z0-9]+/, "").slice(0, 60) || "model";
+    for (var n = 2, out = id; findModel(out); n++) out = id + "-" + n;
+    return out;
+  }
+  // pastedFlags reads vllm serve flags from a pasted command, for the fields they match.
+  // specJSON finds a pasted --speculative-config: '{…}' (quoted or not, braces matched) or the dotted
+  // --speculative-config.method mtp form, as JSON text.
+  function specJSON(t) {
+    var py = /speculative_config\s*=\s*\{/.exec(t); // LLM(..., speculative_config={"method": ...})
+    if (py && !/--speculative/.test(t)) t = t.slice(py.index).replace(/'/g, '"').replace(/\bTrue\b/g, "true").replace(/\bFalse\b/g, "false").replace(/\bNone\b/g, "null").replace(/^speculative_config\s*=/, "--speculative-config ");
+    var i = t.search(/(--speculative[-_]config|\s-sc)[=\s]+["']?\{/); // -sc: vLLM's short form
+    if (i >= 0) {
+      for (var j = t.indexOf("{", i), d = 0, k = j; k < t.length; k++) {
+        if (t[k] === "{") d++;
+        else if (t[k] === "}" && --d === 0) return t.slice(j, k + 1);
+      }
+    }
+    var o = {}, m, re = /(?:--speculative[-_]config|-sc)\.(\w+)[=\s]+["']?([^\s"']+)/g;
+    while ((m = re.exec(t))) o[m[1]] = /^\d+(\.\d+)?$/.test(m[2]) ? Number(m[2]) : m[2];
+    return Object.keys(o).length ? JSON.stringify(o) : "";
+  }
+  function known(list, v) { return v && (" " + list + " ").indexOf(" " + v + " ") >= 0 ? v : ""; } // a parser vLLM has
+  function pastedFlags(t) {
+    var f = {}, m;
+    t = String(t).replace(/[\u201c\u201d]/g, '"').replace(/[\u2018\u2019]/g, "'").replace(/\\"/g, '"'); // curly quotes, \" escapes
+    if ((m = /--max[-_]model[-_]len[=\s]+["']?(\d+(?:\.\d+)?)([kKmM]?)\b/.exec(t))) f.context = Math.round(Number(m[1]) * ({ k: 1e3, K: 1024, m: 1e6, M: 1048576 }[m[2]] || 1)); // vLLM's suffixes
+    if ((m = /--tool-call-parser[=\s]+["']?([\w-]+)/.exec(t))) f.tool = m[1];
+    if ((m = /--reasoning-parser[=\s]+["']?([\w-]+)/.exec(t))) f.reason = m[1];
+    if ((m = /(?:--quantization|(?:^|\s)-q)[=\s]+["']?([\w-]+)/.exec(t))) f.quant = m[1]; // -q: vLLM's short form
+    if ((m = /--revision[=\s]+["']?([\w.\/-]+)/.exec(t))) f.rev = m[1]; // refs/pr/12 too
+    if ((m = /(?:^|[^-\w])max_model_len\s*=\s*([\d_]+)/.exec(t))) f.context = Number(m[1].replace(/_/g, "")); // LLM(..., max_model_len=32_768), not --max_model_len=64K
+    if (f.context < 1024) delete f.context; // not a context anyone means
+    if ((m = /huggingface\.co\/[^\/\s]+\/[^\/\s]+\/(?:tree|commit|blob|resolve)\/([\w.%-]+)/.exec(t)) && m[1].replace(/\.+$/, "") !== "main") f.rev = decodeURIComponent(m[1]).replace(/\.+$/, ""); // a URL ending a sentence; refs can't end in "." // a pasted branch or commit
+    var sj = specJSON(t);
+    if (sj) {
+      try {
+        var sp = JSON.parse(sj), n = sp.num_speculative_tokens;
+        if (/mtp/.test(sp.method || "") && !sp.model) sp.method = "mtp"; // qwen3_next_mtp and the like: vLLM maps them to mtp
+        f.spec = sp;
+      } catch (e) {}
+    }
+    return f;
+  }
+  var typed0 = ""; // what was in the box when a pick started
+  var flags = {}, draftNext = null, pickList = [], pickHi = -1; // the results a pick came from, offered again if it stops
+  function pick(repo, from, fromWhy) {
+    var n = ++pickSeq;
+    clearTimeout(hfTimer);
+    hfSeq++;
+    if (!from) { typed0 = $("q").value; flags = pastedFlags(typed0); } // a followed stop (gated copy, draft target) keeps them // a pasted command's flags, whether picked by Enter or a click
+    if (!from && draftNext && draftNext.q === $("q").value && !flags.spec) flags.spec = draftNext.spec; // picked from a draft's target search
+    draftNext = null;
+    var listed = !editing && !$("res").hidden && $("d-body").hidden && opts.some(function (o) { return o.id.toLowerCase() === repo.toLowerCase(); }); // a first pick from the list; else "Reading the repo…"
+    if (!from) { pickList = opts.slice(); pickHi = defHi; } // the search's own default, not where the pointer was
+    if (!editing) {
+      heldBand = 0; $("form").style.minHeight = $("form").offsetHeight + "px"; // it keeps its height while reading, so nothing jumps or lands on the backdrop
+      $("form").classList.add("held");
+      // The previous repo's form stays where it is but can't be used or added while the new one is read.
+      $("d-body").inert = true; $("save").disabled = true; hf = null;
+    }
+    if (listed) { dimResults(repo); dMsg(""); } else closeResults(); // not the last stop's line while this one reads // the list stays, dimmed, until the form replaces it
+    $("q").value = repo;
+    if (listed) announce("Reading " + repo + "…"); else dMsg("Reading the repo…"); // the dimmed list, the pick marked, shows it
+    showAll = 0;
+    return hfInfo(repo).then(function (h) {
+      if (n !== pickSeq || !dlg.open) return;
+      var dimmed = $("res").inert; // kept, dimmed, until a search that a stop starts replaces it
+      if (h.id && h.id !== repo && !editing) { repo = h.id; $("q").value = repo; } // Hugging Face's own spelling of the id
+      if (h.gated && h.copy && !editing) return pick(h.copy, repo); // its ungated copy, named for the repo asked for
+      var isDraft = /eagle|dflash|dspark|draft|specul|-assistant$/i.test(repo);
+      if (isDraft && !h.target && /-assistant$/i.test(repo)) h.target = repo.replace(/-assistant$/i, ""); // Gemma's drafts name no target
+      if (!editing && !from && isDraft && h.target) { // its target, with this draft set up
+        flags.spec = draftSpec(repo);
+        return pick(h.target, repo, "Draft's target; ");
+      }
+      if (!editing && !from && (h.noSafetensors || h.exl) && h.original) return pick(h.original, repo, "Safetensors original; "); // a GGUF's or EXL quant's original
+      var hold0 = $("form").style.minHeight; $("form").style.minHeight = ""; $("form").classList.remove("held");
+      $("d-body").inert = false; $("save").disabled = false;
+      h.from = from || ""; h.fromWhy = fromWhy || "";
+      var stop = h.status === 401 || h.status === 404 ? "No public repo by that name; check it."
+        : h.gated ? "Gated; pick an ungated copy."
+        : isDraft ? "Draft model; pick its target repo."
+        : !h.chat ? "Not a chat model; pick another repo."
+        : h.exl && h.found ? "EXL quant vLLM can't load; pick another." : h.noSafetensors ? "No safetensors; pick another repo."
+        : h.noTemplate ? (h.isBase ? "Base model; pick an instruct repo." : "No chat template; pick an instruct repo.") : h.limited && !h.found ? "Hugging Face rate limit; retry in a minute." : "";
+      var lostTarget = fromWhy === "Draft's target; " && (h.status === 401 || h.status === 404) ? from : ""; // the draft's tag names a repo that isn't there
+      if (lostTarget) stop = "Draft model; pick its target repo.";
+      if (stop) {
+        hf = null; $("d-body").hidden = $("save").hidden = $("cancel").hidden = true;
+        if (dimmed && !(!editing && (h.gated || isDraft || lostTarget || h.isBase))) closeResults();
+        if (h.limited && !h.found && !editing && /^[^\/\s]+\/[^\/\s]+$/.test(repoOf(typed0))) $("q").value = typed0; // Enter retries it, flags and all
+        if ($("d-msg").textContent === stop) { dMsg(""); setTimeout(function () { dMsg(stop, "err"); }); } else dMsg(stop, "err"); // the same stop again is said again
+        var held1 = function () { if (stopHold) { $("form").style.minHeight = stopHold; $("form").classList.add("held"); } };
+        if (h.gated && !editing) { stopHold = hold0; $("q").value = repo.split("/")[1]; search(true); held1(); } // copies by other uploaders, to pick from
+        else if ((isDraft || lostTarget) && !editing) { // models named like it, to pick its target from
+          var dr = lostTarget || repo, bare = dr.split("/")[1].replace(/[-_.]?(eagle-?3?|dflash|dspark|draft|speculators?)(?=$|[-_.])/gi, "").replace(/^[-_.]+|[-_.]+$/g, "").replace(/[-_](bf16|fp16|fp8|fp32)$/i, "");
+          if (bare) { stopHold = hold0; draftNext = { q: bare, spec: draftSpec(dr) }; $("q").value = bare; search("draft"); held1(); }
+        } else if (h.isBase && !editing) { stopHold = hold0; skipId = repo.toLowerCase(); $("q").value = repo.split("/")[1].replace(/-base$|-pt$/i, ""); search("base"); held1(); } // its chat tunes, to pick from
+        else if (!editing) { // the list it came from stays, the next result marked, so a second Enter takes it
+          var at = pickList.map(function (o) { return o.id.toLowerCase(); }).indexOf((from || repo).toLowerCase());
+          var stopped = (from || repo).toLowerCase(), offered = pickList.filter(function (o) { return o.id.toLowerCase() !== stopped; }), defId = pickHi >= 0 && pickList[pickHi] ? pickList[pickHi].id.toLowerCase() : "", tune = pickList.map(function (o) { return /^-(it|instruct|chat)\b/i.test(o.id.toLowerCase().slice(stopped.length)) && o.id.toLowerCase().indexOf(stopped) === 0; }).indexOf(true);
+          var stem0 = stopped.split("/")[1].replace(/-(base|pt|v\d[\w.]*)$/i, ""); offered = offered.filter(function (o) { return o.id.toLowerCase().split("/")[1].indexOf(stem0) >= 0; }); // its relatives, not fuzzy matches
+          if (offered.length && h.chat && !h.limited) { // not after "Not a chat model": its list is more of the same
+            tune = offered.map(function (o) { return /^-(it|instruct|chat)\b/i.test(o.id.toLowerCase().slice(stopped.length)) && o.id.toLowerCase().indexOf(stopped) === 0; }).indexOf(true); opts = offered;
+            hi = tune >= 0 ? tune : offered.map(function (o) { return o.id.toLowerCase(); }).indexOf(defId); chose = true; paintResults(); // only its chat tune or the search's default is marked
+          }
+          else if ((h.isBase || h.noSafetensors || h.exl) && h.chat && !h.limited) { var bare0 = (from || repo).split("/")[1].replace(/[-_.](base|pt|gguf|exl[23]|[\d.]+bpw\w*)$/i, ""); if (bare0) { stopHold = hold0; skipId = (from || repo).toLowerCase(); $("q").value = bare0; search("base"); held1(); } } // nothing listed: its chat or safetensors sibling
+        }
+        return;
+      }
+      if (dimmed) closeResults();
+      hf = h;
+      $("cancel").hidden = false;
+      // A pasted --max-model-len wins, but never past the repo's maximum (vLLM refuses to start).
+      var ctx = Math.min(flags.context || 262144, h.max || 32768); // an unknown maximum: a size every model takes
+      // The ID: a gated repo's copy keeps the gated repo's name; for a GGUF or a draft, it's the repo actually served.
+      fill({ id: freeId((from && !fromWhy ? from : repo).split("/")[1]), hf_repo: repo, context: ctx, enable_thinking: h.thinkOn,
+        tool_parser: known(TOOL_PARSERS, flags.tool) || h.tool, reasoning_parser: known(REASON_PARSERS, flags.reason) || h.reason, quantization: flags.quant, revision: from ? "" : flags.rev, speculative_config: flags.spec, gpus: null }); // a pasted command's flags win
+      flags = {};
+      dMsg(h.found ? "" : "Hugging Face unreachable; see Advanced.", h.found ? "" : "err");
+      if (!h.found) $("adv").open = true; // otherwise as the operator left it
+      $("d-body").hidden = false;
+      $("save").hidden = false;
+      focusQuiet($("save")); // filled: Enter adds it
+      announce("Filled in " + $("f-id").value + ", " + fmtCtx($("f-ctx").value) + " context, " + JSON.parse($("f-gpus").getAttribute("data-sel") || "[]").length + " GPUs." + ($("f-why").classList.contains("warn") ? " " + $("f-why").textContent + ($("f-why").title ? " " + $("f-why").title : "") : ""));
+    });
+  }
+
+  function openEdit(id) {
+    var m = findModel(id);
+    if (!m) return;
+    if (draft === id) { draft = ""; editing = id; showDlg(); return $("save").focus({ preventScroll: true }); }
+    draft = "";
+    editing = id; hf = null; showAll = 0; sampOpen = false;
+    var n = ++pickSeq;
+    $("d-title").textContent = $("d-title").title = m.display_name ? "Edit " + m.display_name : "Edit model"; // the ID box below names it
+    if (!m.display_name) $("d-title").appendChild(el("span", "sr")).textContent = " " + m.id;
+    $("f-id").title = ""; // set once shown, if it's cut off
+    $("save").textContent = "Save";
+    $("save").hidden = false;
+    $("remove").hidden = false;
+    $("d-search").hidden = true;
+    $("d-body").hidden = false;
+    $("foot").hidden = false;
+    $("cancel").hidden = false;
+    $("f-id").readOnly = true; // the ID can't change: clients use it
+    $("f-id-box").classList.add("full"); // the whole row, for a long ID
+    $("f-repo-box").hidden = false;
+    $("adv").open = false;
+    var own = m.error && / in Edit\.$/.test(errText(m.error)) ? errText(m.error) : m.status === "failed" ? "Failed; try other GPUs." : ""; // the model's own problem to fix here; a DeepInfra hiccup stays on the row
+    // Shown under the GPUs it's about, saying what to do there.
+    editOwn = own ? { text: own.replace(/fix in Edit\.$/, /GPU/.test(own) ? "pick other GPUs." : "check Advanced.").replace(" in Edit", ""), tip: m.error || "", kind: isNoGPU(own) ? "warn" : "err" } : null;
+    fill(m); // it clears leftover field errors, and the message with them
+    dMsg("");
+    showDlg();
+    if ($("f-id").scrollWidth > $("f-id").clientWidth) $("f-id").title = m.id; // a long ID is cut off in its box
+    focusQuiet($("f-ctx"));
+    var cr = $("f-ctx").getBoundingClientRect(), ft = $("foot").getBoundingClientRect().top;
+    if (cr.bottom > ft - 4) dlg.scrollTop += cr.bottom - ft + 8; // a short screen: not under the footer
+    hfInfo(m.hf_repo).then(function (h) { if (n === pickSeq && dlg.open) { hf = h; refreshHF(m); } });
+  }
+
+  // fill puts a model's settings in the form; refreshHF then adds what the repo says.
+  function fill(m) {
+    $("f-id").value = m.id || "";
     $("f-name").value = m.display_name || "";
     $("f-repo").value = m.hf_repo || "";
     $("f-rev").value = m.revision || "";
-    $("f-ctx").value = String(m.context || "");
-    $("f-quant").value = m.quantization || "";
+    $("f-quant").setAttribute("data-val", m.quantization || "");
+    $("f-tool").title = "";
     $("f-tool").value = m.tool_parser || "";
     $("f-reason").value = m.reasoning_parser || "";
     $("f-think").checked = !!m.enable_thinking;
-    $("f-gen").value = json(m.generation_config);
     $("f-guard").value = m.loop_guard || "off";
-    $("f-spec").value = json(m.speculative_config);
-    renderGpuOptions(m.gpus || []);
-    $("form-title").textContent = "Edit " + m.id;
-    $("submit").textContent = "Save changes";
-    $("cancel").style.display = "";
-    $("edit-note").style.display = "";
-    setFormMsg("", "");
-    $("form").scrollIntoView({ behavior: "smooth", block: "start" });
+    GEN.forEach(function (g) { var v = (m.generation_config || {})[g[0]]; $("g-" + g[0]).value = v != null ? v : ""; });
+    sampOpen = sampOpen || GEN.some(function (g) { return $("g-" + g[0]).value !== ""; }); // set values are never hidden behind a closed "Sampling"; a re-pick keeps it as it was
+    setSpec(m.speculative_config);
+    $("f-gpus").setAttribute("data-sel", JSON.stringify(m.gpus || []));
+    $("f-gpus").toggleAttribute("data-auto", !m.gpus);
+    $("f-ctx").setAttribute("data-val", m.context || "");
+    Array.prototype.forEach.call($("form").querySelectorAll("[aria-invalid]"), valid);
+    refreshHF(m);
   }
 
-  function stopEdit() {
-    state.editing = null;
-    $("form").reset();
-    $("f-id").readOnly = false;
-    renderGpuOptions([]);
-    $("form-title").textContent = "Add model";
-    $("submit").textContent = "Add model";
-    $("cancel").style.display = "none";
-    $("edit-note").style.display = "none";
+  // setSpec shows a speculative config in the form: a built-in, a draft, n-gram, or as JSON.
+  function setSpec(sp) {
+    sp = sp || null;
+    var meth = sp && (sp.method || (sp.model ? methodOf(sp.model) : "")), plain = sp && Object.keys(sp).every(function (k) { return /^(method|model|num_speculative_tokens)$/.test(k); });
+    // A config naming a model is a draft, whatever its method (Gemma's mtp drafts too); without one, mtp or dspark is built in.
+    $("f-spec").setAttribute("data-mode", !sp ? "" : plain && sp.model && /^(eagle3?|dflash|dspark|mtp|draft_model)$/.test(meth) ? "draft" : plain && /^(mtp|dspark)$/.test(meth) ? "mtp" : plain && meth === "ngram" ? "ngram" : "json"); // extra keys (prompt_lookup_max, enforce_eager) stay as JSON
+    $("f-spec").setAttribute("data-builtin", sp && !sp.model ? meth : "");
+    $("f-spec-n").value = (sp && sp.num_speculative_tokens) || "";
+    $("f-draft").value = (sp && sp.model) || "";
+    $("f-method").value = meth && /^(eagle3?|dflash|dspark|mtp|draft_model)$/.test(meth) ? meth : "eagle3";
+    $("f-spec-json").value = sp ? JSON.stringify(sp) : "";
   }
-  $("cancel").addEventListener("click", function () { stopEdit(); setFormMsg("", ""); });
-
-  $("form").addEventListener("submit", function (ev) {
-    ev.preventDefault();
-    var ctx = parseContext($("f-ctx").value);
-    if (ctx == null) { setFormMsg("Invalid context length. Use e.g. 1048576, 1M or 256k.", "err"); return; }
-    var gpus = checkedGpus();
-    if (!gpus.length) { setFormMsg("Select at least one GPU.", "err"); return; }
-    var gen;
-    try { gen = $("f-gen").value.trim() ? JSON.parse($("f-gen").value) : undefined; }
-    catch (e) { setFormMsg("Default sampling must be a JSON object.", "err"); return; }
-    var spec;
-    try { spec = $("f-spec").value.trim() ? JSON.parse($("f-spec").value) : undefined; }
-    catch (e) { setFormMsg("Speculative decoding must be a JSON object.", "err"); return; }
-    var body = {
-      id: $("f-id").value.trim(),
-      display_name: $("f-name").value.trim(),
-      hf_repo: $("f-repo").value.trim(),
-      revision: $("f-rev").value.trim(),
-      gpus: gpus,
-      context: ctx,
-      quantization: $("f-quant").value.trim(),
-      tool_parser: $("f-tool").value.trim(),
-      reasoning_parser: $("f-reason").value.trim(),
-      enable_thinking: $("f-think").checked,
-      loop_guard: $("f-guard").value,
-      generation_config: gen,
-      speculative_config: spec
-    };
-    var editing = state.editing;
-    var btn = $("submit");
-    btn.disabled = true;
-    setFormMsg("Submitting...", "");
-    api(editing ? "PUT" : "POST", "/models", body).then(function (d) {
-      setFormMsg(editing
-        ? "Model \"" + body.id + "\" saved." + (d.redeployed ? " Its deployment was deleted; the next request provisions one with the new settings." : "")
-        : "Model \"" + ((d.model && d.model.id) || body.id) + "\" added. It appears in Claude Code's /model picker after Claude Code restarts.", "ok");
-      stopEdit();
-      return syncModels(); // refresh /v1/models so the model (and its name) shows in the picker
-    }).then(function () {
-      return load();
-    }).catch(function (e) {
-      setFormMsg(e.message, "err");
-    }).then(function () { btn.disabled = false; });
-  });
-
-  /* ---------- settings (stored in this plugin's CLIProxyAPI config) ---------- */
-  var CONFIG = "/v8/management/config/plugins/configs/deepinfra-autoscale";
-  function mgmt(method, body) {
-    var blocked = keyBlocked();
-    if (blocked) return Promise.reject(blocked);
-    var opts = { method: method, headers: { "Authorization": "Bearer " + keyInput.value.trim() } };
-    if (body !== undefined) {
-      opts.headers["Content-Type"] = "application/json";
-      opts.body = JSON.stringify(body);
-    }
-    return fetch(CONFIG, opts).then(function (res) {
-      if (res.status === 401) { keyRejected = true; authFail(); throw new Error("Management key required or invalid"); }
-      if (!res.ok) throw new Error("HTTP " + res.status);
-      return res.json();
+  function refreshHF() {
+    var h = hf || {}, cur = Number($("f-ctx").getAttribute("data-val")) || 0, max = h.max || 0;
+    // Context: powers of two up to the repo's maximum, plus the current value.
+    var cs = [8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576].filter(function (c) { return !max || c < max; });
+    if (max) cs.push(max);
+    if (max && cur > max) { cur = max; $("f-ctx").setAttribute("data-val", max); } // vLLM refuses a context past the repo's maximum
+    if (cur && cs.indexOf(cur) < 0) cs.push(cur);
+    cs.sort(function (a, b) { return a - b; });
+    $("f-ctx").innerHTML = cs.map(function (c) { return '<option value="' + c + '"' + (c === cur ? " selected" : "") + ">" + (c === max ? ctxName(c) : fmtCtx(c)) + (c === max ? " (max)" : "") + "</option>"; }).join("");
+    $("f-think-box").hidden = hf && hf.found ? !(h.think && h.reason) : !$("f-think").checked; // without a reasoning parser the thinking lands in the reply // unread: keep what the model has
+    var qv = $("f-quant").getAttribute("data-val") || "", qs = QUANTS.slice();
+    if (qv && qs.indexOf(qv) < 0) qs.unshift(qv);
+    $("f-quant").title = h.quant ? "Auto: " + h.quant + ", from the repo" : "";
+    $("f-quant").innerHTML = '<option value="">Auto</option>' + qs.map(function (q) { return "<option" + (q === qv ? " selected" : "") + ">" + esc(q) + "</option>"; }).join("");
+    $("f-name").placeholder = "Same as ID";
+    $("f-tool").title = h.toolTip || "";
+    var any = GEN.some(function (g) { return h.gen && h.gen[g[0]] != null; });
+    $("f-samp-l").textContent = "Sampling";
+    $("f-samp-l").title = "Blank uses " + (any || !hf ? "the repo's default" : "vLLM's default");
+    GEN.forEach(function (g) { var v = h.gen && h.gen[g[0]]; $("g-" + g[0]).placeholder = v != null ? v : "default"; });
+    $("f-samp-more").setAttribute("aria-expanded", String(sampOpen));
+    $("f-samp").hidden = !sampOpen;
+    var mode = $("f-spec").getAttribute("data-mode") || "";
+    $("f-spec").innerHTML = '<option value="">Off</option>' + (h.mtp || h.dspark || mode === "mtp" ? '<option value="mtp">Built-in ' + (h.dspark ? "DSpark" : "MTP") + "</option>" : "") +
+      '<option value="draft">Draft model</option><option value="ngram">N-gram</option><option value="json">Custom JSON</option>';
+    $("f-spec").value = mode;
+    specMode(true);
+    renderGpus();
+  }
+  $("f-quant").addEventListener("change", function () { this.setAttribute("data-val", this.value); });
+  // keepPlace runs fn and holds the form's height only by what keeps n where it was (scrolling would clamp).
+  function keepPlace(n, fn) {
+    var y0 = n.getBoundingClientRect().top;
+    fn();
+    var want = dlg.scrollTop + n.getBoundingClientRect().top - y0;
+    $("form").style.minHeight = "";
+    var short = want - (dlg.scrollHeight - dlg.clientHeight);
+    var natural = $("form").offsetHeight; heldBand = 0;
+    if (short > 0) { $("form").style.minHeight = want + parseFloat(getComputedStyle(dlg).maxHeight) - (dlg.offsetHeight - dlg.clientHeight) + "px"; $("form").classList.add("held"); heldBand = $("form").offsetHeight - natural; } // tall enough that the dialog is at its max height with room to scroll back; released on close
+    dlg.scrollTop = want;
+  }
+  // A new repo in Edit is read again: its parsers, thinking and size follow it.
+  var editFrom = "", editWhy = "", editDraft = ""; // a followed repo change: where from, why, and the draft to set up
+  $("f-repo").addEventListener("change", function () {
+    var repo = repoOf(this.value), n = ++pickSeq, fl = pastedFlags(this.value), from = editFrom, why = editWhy, draftRepo = editDraft;
+    editFrom = editWhy = editDraft = "";
+    if (!editing) return;
+    if (!/^[^\/\s]+\/[^\/\s]+$/.test(repo)) { if (this.value.trim()) mark(this, "Hugging Face repo must be owner/name."); return; }
+    this.value = repo;
+    dMsg("Reading the repo…");
+    $("save").disabled = true;
+    hfInfo(repo).then(function (h) {
+      if (n !== pickSeq || !dlg.open) return;
+      var isDraft = /eagle|dflash|dspark|draft|specul|-assistant$/i.test(repo);
+      if (isDraft && !h.target && /-assistant$/i.test(repo)) h.target = repo.replace(/-assistant$/i, "");
+      var follow = function (to, why) { editFrom = repo; editWhy = why; $("f-repo").value = to; $("f-repo").dispatchEvent(new Event("change")); }; // as Add does
+      if (h.gated && h.copy) return follow(h.copy, "");
+      if (isDraft && h.target) { editDraft = repo; return follow(h.target, "Draft's target; "); }
+      if ((h.noSafetensors || h.exl) && h.original) return follow(h.original, "Safetensors original; ");
+      if (why === "Draft's target; " && (h.status === 401 || h.status === 404)) { $("f-repo").value = from; return mark($("f-repo"), "Draft model; pick its target repo."); } // the draft's tag names a missing repo
+      var stop = h.status === 401 || h.status === 404 ? "No public repo by that name; check it."
+        : h.gated ? "Gated, no ungated copy; pick another." : isDraft ? "Draft model; pick its target repo." : !h.chat ? "Not a chat model; pick another repo."
+        : h.exl && h.found ? "EXL quant vLLM can't load; pick another." : h.noSafetensors ? "No safetensors; pick another repo." : h.noTemplate ? (h.isBase ? "Base model; pick an instruct repo." : "No chat template; pick an instruct repo.") : "";
+      if (stop) return mark($("f-repo"), stop); // Save stays off until a usable repo is entered
+      h.from = from; h.fromWhy = why;
+      if (draftRepo) fl.spec = draftSpec(draftRepo);
+      $("save").disabled = false;
+      hf = h;
+      editOwn = null; // the old repo's problem: the new size line (and why the repo was followed) shows
+      $("f-quant").setAttribute("data-val", fl.quant || ""); // the old repo's quantization would refuse to load
+      $("f-tool").value = known(TOOL_PARSERS, fl.tool) || h.tool; $("f-reason").value = known(REASON_PARSERS, fl.reason) || h.reason; $("f-think").checked = h.thinkOn;
+      $("f-rev").value = fl.rev || ""; // not the old repo's commit
+      if (fl.context) $("f-ctx").setAttribute("data-val", fl.context);
+      if (fl.spec) setSpec(fl.spec);
+      else if ($("f-spec").value === "draft" || ($("f-spec").value === "mtp" && !h.mtp && !h.dspark)) $("f-spec").setAttribute("data-mode", ""); // drafts are per model
+      if (h.weights) $("f-gpus").setAttribute("data-auto", "1"); // GPUs that fit the new size; unknown, the current ones stay
+      dMsg(h.found ? "" : h.limited ? "Hugging Face rate limit; see Advanced." : "Hugging Face unreachable; see Advanced.", h.found ? "" : "err");
+      keepPlace($("f-repo"), refreshHF);
+      announce("Read " + repo + ": " + fmtCtx($("f-ctx").value) + " context, " + JSON.parse($("f-gpus").getAttribute("data-sel") || "[]").length + " GPUs. " + $("f-why").textContent + ($("f-why").title ? " " + $("f-why").title : ""));
     });
+  });
+  var sampOpen = false;
+  $("f-samp-more").addEventListener("click", function () {
+    sampOpen = !sampOpen; // a toggle like Advanced; focus stays on it
+    keepPlace(this, refreshHF);
+  });
+
+  // specMode shows the speculative fields for the chosen mode; kept keeps the values filled in.
+  var draftsFor = "";
+  function specMode(kept) {
+    var v = $("f-spec").value;
+    $("f-spec").setAttribute("data-mode", v);
+    $("f-spec-n-box").hidden = !v || v === "json";
+    $("f-draft-box").hidden = v !== "draft"; // the method follows from the draft repo's name (draftMethod)
+    $("f-spec-json").hidden = v !== "json";
+    ["f-draft", "f-spec-n", "f-spec-json"].forEach(function (id) { if ($(id).closest("[hidden]") || $(id).hidden) valid($(id)); }); // a hidden field's error goes with it
+    if (!kept) $("f-spec-n").value = { mtp: (hf || {}).dspark ? 5 : 3, ngram: 4, draft: $("f-draft").value.trim() ? draftSpec($("f-draft").value.trim()).num_speculative_tokens : 3 }[v] || ""; // as vLLM's recipes
+    if (v === "draft") findDrafts();
   }
-  function setSettingsMsg(text, kind) {
-    $("s-msg").textContent = text || "";
-    $("s-msg").className = "msg" + (kind ? " " + kind : "");
+  $("f-spec").addEventListener("change", function () { keepPlace(this, function () { specMode(false); }); });
+  // findDrafts lists Hugging Face repos that look like drafts for this model (EAGLE, DFlash, ...).
+  function findDrafts() {
+    var repo = $("f-repo").value.trim(), base = (repo.split("/")[1] || "").replace(/-(instruct|chat|fp8|nvfp4|awq|gptq|bf16|base)\b.*$/i, "");
+    if (!base || draftsFor === repo) return;
+    draftsFor = repo;
+    var get = function (q) { return fetch(HF + "/api/models?search=" + encodeURIComponent(q) + "&limit=100&sort=downloads&expand[]=tags").then(function (r) { return r.json(); }).then(function (d) { return Array.isArray(d) ? d : []; }); };
+    Promise.all([get(repo.split("/")[1]), base !== repo.split("/")[1] ? get(base) : [], get(base + "-speculator")]).then(function (r) {
+      var seen = {}, d = r[0].concat(r[1], r[2]).filter(function (m) { return !seen[m.id] && (seen[m.id] = 1); });
+      var tagged = {}; d.forEach(function (m) { if ((m.tags || []).some(function (t) { return /^base_model:/.test(t) && t.split(":").pop().toLowerCase() === repo.toLowerCase(); })) tagged[m.id] = 1; }); // made for this repo, by its tags
+      var c = d.map(function (m) { return m.id; }).filter(function (r) { return /eagle|dflash|dspark|draft|specul|-assistant$/i.test(r) && !/gguf|mlx/i.test(r) && r !== repo; });
+      var trust = function (r) { var o = r.split("/")[0]; return o === repo.split("/")[0] ? 0 : /^(RedHatAI|nvidia|neuralmagic|vllm-project)$/i.test(o) ? 1 : tagged[r] ? 2 : 3; }; // its maker, known publishers, then tagged for it
+      c.sort(function (a, b) { return trust(a) - trust(b); });
+      var name = (repo.split("/")[1] || "").toLowerCase(), tail = name.slice(base.length);
+      var full = function (r) { return r.toLowerCase().indexOf(name) >= 0; }; // made for exactly this model
+      var own = function (r) { return full(r) || /^([-.](instruct|chat|awq|fp8|nvfp4|gptq|bf16|int4|int8|w4a16|w8a8|w4a4|dynamic|static|quantized|block))*$/i.test(tail) && r.toLowerCase().indexOf(base.toLowerCase()) >= 0; }; // or for it under its base name, not a sibling
+      var mine = function (r) { return tagged[r] || own(r); };
+      c = c.filter(function (r) { return mine(r) && trust(r) < 3; }).concat(c.filter(function (r) { return mine(r) && trust(r) === 3; })).slice(0, 8); // only drafts for this model
+      $("f-drafts").innerHTML = c.map(function (r) { return '<option value="' + esc(r) + '">'; }).join("");
+      var sure = c.filter(function (r) { return mine(r) && trust(r) < 3; })[0]; // for it, from its maker, a known publisher, or tagged for it
+      if (!$("f-draft").value && sure) { $("f-draft").value = sure; draftMethod(); }
+    }, function () { draftsFor = ""; });
   }
-  function loadSettings() {
-    return mgmt("GET").then(function (cfg) {
-      $("s-idle").value = cfg["idle-minutes"] != null ? cfg["idle-minutes"] : "";
-    }).catch(function () {});
+  function methodOf(r) { return /dflash/i.test(r) ? "dflash" : /dspark/i.test(r) ? "dspark" : /-assistant$/i.test(r) ? (/gemma/i.test(r) ? "mtp" : "dflash") : /eagle-?3/i.test(r) ? "eagle3" : /eagle/i.test(r) ? "eagle" : "draft_model"; }
+  function draftSpec(r) { var me = methodOf(r); return { method: me, model: r, num_speculative_tokens: me === "dflash" && /-assistant$/i.test(r) ? 15 : /^d(flash|spark)$/.test(me) ? 8 : me === "mtp" ? 4 : 3 }; } // as vLLM's recipes
+  function draftMethod() {
+    var sp = draftSpec($("f-draft").value);
+    $("f-method").value = sp.method;
+    $("f-spec-n").value = sp.num_speculative_tokens;
   }
-  function minutesField(id, label) {
-    var v = $(id).value.trim();
-    if (v === "") return null;
-    if (!/^[0-9]+$/.test(v) || Number(v) <= 0) throw new Error(label + " must be a positive whole number of minutes.");
-    return Number(v);
+  $("f-draft").addEventListener("change", draftMethod);
+
+  // need is the estimated GPU memory for the weights plus the fp8 KV cache at the chosen context.
+  function need() {
+    var h = hf || {};
+    return h.weights ? h.weights * 1.1 + h.kv * Number($("f-ctx").value) + 2 : 0;
   }
-  $("settings").addEventListener("submit", function (ev) {
-    ev.preventDefault();
-    var idle;
-    try {
-      idle = minutesField("s-idle", "Idle window");
-    } catch (e) { setSettingsMsg(e.message, "err"); return; }
-    var apiKey = $("s-key").value.trim();
-    $("s-save").disabled = true;
-    setSettingsMsg("Saving...", "");
-    (apiKey ? api("PUT", "/api-key", { api_key: apiKey }) : Promise.resolve()).then(function () {
-      $("s-key").value = "";
-      // NOTE: the endpoint replaces the whole plugin config, so merge into the current one.
-      return mgmt("GET");
-    }).then(function (cfg) {
-      if (idle == null) delete cfg["idle-minutes"]; else cfg["idle-minutes"] = idle;
-      return mgmt("PUT", cfg);
-    }).then(function () {
-      setSettingsMsg("Saved.", "ok");
-      return loadSettings();
-    }).then(function () {
+  function gpuGB(name) { var m = /^(\d+)x.*-(\d+)GB$/.exec(name); return m ? +m[1] * +m[2] : 0; }
+  // renderGpus shows the selected GPUs; "+N more" adds the others that fit, then any that may not.
+  // A new model gets the cheapest fitting GPU of up to 3 types, so one type being full doesn't block it.
+  function renderGpus() {
+    var box = $("f-gpus"), sel = JSON.parse(box.getAttribute("data-sel") || "[]"), gb = need();
+    var fits = function (g) { return !gb || !gpuGB(g.name) || gpuGB(g.name) * 0.9 >= gb; };
+    var all = S.gpus.slice().sort(function (a, b) { return a.usd_per_hour - b.usd_per_hour; });
+    sel.forEach(function (n) { if (!gpuInfo(n)) all.push({ name: n, usd_per_hour: 0, missing: true }); });
+    all.sort(function (a, b) { return (fits(b) ? 1 : 0) - (fits(a) ? 1 : 0) || a.usd_per_hour - b.usd_per_hour; });
+    if (box.hasAttribute("data-auto")) {
+      var fam = {};
+      sel = [];
+      if (gb) all.filter(fits).forEach(function (g) { // size unknown: nothing to go on, so pick none
+        var f = g.name.replace(/^\d+x/, "");
+        if (sel.length < 3 && !fam[f] && !((hf || {}).hopper && /A100/.test(f))) { fam[f] = 1; sel.push(g.name); }
+      });
+      // Include a type that has one free now, if any fits.
+      var free = gb && all.filter(function (g) { return fits(g) && g.available && !fam[g.name.replace(/^\d+x/, "")] && !((hf || {}).hopper && /A100/.test(g.name)); })[0];
+      if (free && !sel.some(function (n) { return (gpuInfo(n) || {}).available; })) sel[Math.min(sel.length, 2)] = free.name;
+      box.setAttribute("data-sel", JSON.stringify(sel));
+    }
+    var first = {};
+    all.filter(fits).forEach(function (g) { var f = g.name.replace(/^\d+x/, ""); if (!first[f]) first[f] = g.name; });
+    var level = function (g) { return sel.indexOf(g.name) >= 0 ? 0 : !fits(g) ? 3 : 2; }; // picked; the others that fit; those that may not
+    all.sort(function (a, b) { return level(a) - level(b) || a.usd_per_hour - b.usd_per_hour; }); // reveal order: expanding only adds chips at the end
+    box._levels = all.map(level);
+    var shown = all.filter(function (g) { return level(g) <= showAll; }), hidden = all.length - shown.length;
+    var nextL = Math.min.apply(null, all.map(level).filter(function (l) { return l > showAll; }).concat(3));
+    var nextCount = all.filter(function (g) { return level(g) === nextL; }).length; // the next step: each type's cheapest, other sizes, then those that may not fit
+    var foc = box.contains(document.activeElement) && document.activeElement.getAttribute("data-gpu");
+    var brk = false;
+    box.innerHTML = shown.map(function (g) {
+      var pre = !brk && level(g) === 3 && shown.some(function (x) { return level(x) < 3; }) ? (brk = true, '<span class="brk" aria-hidden="true"></span>') : "";
+      return pre + '<button type="button" class="chip' + (g.available || g.missing ? "" : " busy") + '" aria-pressed="' + (sel.indexOf(g.name) >= 0) + '" data-gpu="' + esc(g.name) + '"' + (!fits(g) ? ' title="May not fit ~' + Math.round(gb) + ' GB"' : g.available || g.missing ? "" : ' title="None free right now"') + ">" + esc(short(g.name)) +
+        ' <span class="p">' + (g.missing ? (S.gpus.length ? "not listed" : "") : money(g.usd_per_hour)) + "</span>" + "</button>";
+    }).join("") + (hidden ? '<button type="button" class="chip" data-more="1">+' + nextCount + " more</button>" : "") +
+      (!all.length ? '<span class="sub">' + (S.apiKeySet === false ? "No DeepInfra key; add it in Settings." : S.diErr ? errText({ message: S.diErr }) : "DeepInfra listed no GPUs; retry soon.") + "</span>" : "");
+    if (foc) { var f = box.querySelector('[data-gpu="' + CSS.escape(foc) + '"]') || box.querySelector("button"); if (f) f.focus(); }
+    var badSel = gb && sel.some(function (n) { var g = gpuInfo(n); return g && !fits(g); });
+    var h = hf || {}, none = gb && all.length && !all.some(fits), maxGB = Math.max.apply(null, all.map(function (g) { return gpuGB(g.name) * 0.9; }).concat(0));
+    var tooBig = none && h.weights && h.weights * 1.1 + 2 > maxGB; // even the smallest context can't fit
+    $("f-why").classList.toggle("warn", !!(h.gated || h.from || h.toolTip || none || badSel));
+    set($("f-why"), "title", [h.from ? (h.fromWhy ? "Picked for " + h.from + "." : h.from + " is gated; the plugin sends no Hugging Face token.") : "", h.toolTip || ""].filter(Boolean).join(" "));
+    var small = badSel && sel.filter(function (n) { var g = gpuInfo(n); return g && !fits(g); })[0];
+    var why = (h.gated ? "Gated; pick an ungated copy." : small ? short(small) + " may not fit; lower the context." : none ? "No GPU fits ~" + Math.round(gb) + " GB; " + (tooBig ? "pick a quantized repo." : "lower the context.") : gb ? "Needs ~" + Math.round(gb) + " GB at " + (h.kv ? ctxName(Number($("f-ctx").value)) : "this") + " context." : hf && !sel.length ? "Size unknown; pick GPUs that fit it." : "");
+    $("f-why").classList.toggle("err", !!(editing && editOwn && editOwn.kind === "err"));
+    if (editing && editOwn) { why = editOwn.text; $("f-why").classList.toggle("warn", editOwn.kind === "warn"); set($("f-why"), "title", editOwn.tip); }
+    var pre = h.from ? (h.fromWhy || "Ungated copy; ") : h.toolTip ? "No tool calls; " : "";
+    set($("f-why"), "textContent", editing && editOwn ? why : pre + (pre ? lower(why) : why));
+  }
+  $("f-gpus").addEventListener("click", function (e) {
+    var c = e.target.closest(".chip");
+    if (!c || e.detail > 1) return; // a double-click on "+N more" would toggle the chip it reveals
+    if (c.hasAttribute("data-more")) {
+      var before = $("f-gpus").querySelectorAll("[data-gpu]").length;
+      showAll = Math.min.apply(null, $("f-gpus")._levels.filter(function (l) { return l > showAll; }).concat(3)); // one step; those that may not fit last, after the break
+      renderGpus();
+      var first = $("f-gpus").querySelectorAll("[data-gpu]")[before]; // the first one this click revealed
+      if (first) first.focus();
+      return;
+    }
+    var box = $("f-gpus"), sel = JSON.parse(box.getAttribute("data-sel") || "[]"), n = c.getAttribute("data-gpu"), i = sel.indexOf(n);
+    if (i >= 0) sel.splice(i, 1); else sel.push(n);
+    box.setAttribute("data-sel", JSON.stringify(sel));
+    box.removeAttribute("data-auto");
+    c.setAttribute("aria-pressed", String(i < 0));
+    if (editOwn) { editOwn = null; renderGpus(); } // the GPUs changed: the size line again
+  });
+  $("f-ctx").addEventListener("change", function () { $("f-ctx").setAttribute("data-val", this.value); renderGpus(); });
+  function valid(n) {
+    if (n.getAttribute("aria-invalid") === "true" && $("d-msg").className.indexOf("err") >= 0) dMsg("");
+    n.removeAttribute("aria-invalid");
+    if (!n.hasAttribute("data-desc")) return;
+    if (n.getAttribute("data-desc")) n.setAttribute("aria-describedby", n.getAttribute("data-desc")); else n.removeAttribute("aria-describedby");
+    n.removeAttribute("data-desc");
+  }
+  $("form").addEventListener("input", function (e) { valid(e.target); });
+  $("f-gpus").addEventListener("click", function () { valid(this); });
+
+  // readForm builds the model to send, or marks the first problem and returns null.
+  // mark ties an error to its field; bad also moves focus there.
+  function mark(n, msg) {
+    dMsg(msg, "err");
+    n.setAttribute("aria-invalid", "true");
+    if (!n.hasAttribute("data-desc")) n.setAttribute("data-desc", n.getAttribute("aria-describedby") || "");
+    n.setAttribute("aria-describedby", "d-msg");
+  }
+  function bad(id, msg) {
+    var n = $(id);
+    if (n.closest("details")) n.closest("details").open = true;
+    mark(n, msg);
+    var f = n.querySelector("button") || n;
+    f.focus({ preventScroll: true });
+    f.scrollIntoView({ block: "center" }); // clear of the sticky footer
+    return null;
+  }
+  function readForm() {
+    var id = $("f-id").value.trim(), repo = repoOf($("f-repo").value), sel = JSON.parse($("f-gpus").getAttribute("data-sel") || "[]");
+    if (!editing && !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(id)) return bad("f-id", "Model ID: letters, digits, . _ - (max 64).");
+    if (!editing && findModel(id)) return bad("f-id", "That model ID is taken; change it.");
+    if (!/^[^\/\s]+\/[^\/\s]+$/.test(repo)) return bad("f-repo", "Hugging Face repo must be owner/name.");
+    var gb = need();
+    if (!sel.length && gb && S.gpus.length && !S.gpus.some(function (g) { return !gpuGB(g.name) || gpuGB(g.name) * 0.9 >= gb; })) return bad("f-gpus", $("f-why").textContent);
+    if (!sel.length) return bad("f-gpus", !S.gpus.length ? (S.apiKeySet ? (S.diErr ? errText({ message: S.diErr }) : "DeepInfra listed no GPUs; retry shortly.") : "No DeepInfra key; add it in Settings.") : "Select at least one GPU.");
+    var gen = {};
+    for (var i = 0; i < GEN.length; i++) {
+      var v = $("g-" + GEN[i][0]).value.trim();
+      if ($("g-" + GEN[i][0]).validity.badInput) return bad("g-" + GEN[i][0], GEN[i][1] + " must be a number.");
+      if (v === "") continue;
+      if (!isFinite(Number(v))) return bad("g-" + GEN[i][0], GEN[i][1] + " must be a number.");
+      gen[GEN[i][0]] = Number(v);
+    }
+    var was0 = editing ? findModel(editing) || {} : {};
+    if ($("f-tool").value.trim() && !known(TOOL_PARSERS, $("f-tool").value.trim()) && $("f-tool").value.trim() !== was0.tool_parser) return bad("f-tool", "Unknown tool parser; pick one from the list.");
+    if ($("f-reason").value.trim() && !known(REASON_PARSERS, $("f-reason").value.trim()) && $("f-reason").value.trim() !== was0.reasoning_parser) return bad("f-reason", "Unknown reasoning parser; pick one from the list.");
+    var mode = $("f-spec").value, n = Number($("f-spec-n").value) || undefined, spec;
+    if (mode === "mtp" || mode === "ngram") spec = { method: mode === "mtp" && ($("f-spec").getAttribute("data-builtin") === "dspark" || (hf || {}).dspark || /deepseek_v41/.test((hf || {}).mt || "")) ? "dspark" : mode, num_speculative_tokens: n }; // vLLM: V4.1 has no classic MTP
+    else if (mode === "draft") {
+      if (!/^[^\/\s]+\/[^\/\s]+$/.test($("f-draft").value.trim())) return bad("f-draft", "Draft repo must be owner/name.");
+      spec = { method: $("f-method").value, model: $("f-draft").value.trim(), num_speculative_tokens: n };
+    } else if (mode === "json") {
+      try { spec = JSON.parse($("f-spec-json").value); } catch (e) { if (!$("f-spec-json").value.trim()) return bad("f-spec-json", 'Custom JSON needs a "method".'); return bad("f-spec-json", "Not valid JSON; use double quotes, no trailing commas."); }
+      if (spec && typeof spec === "object" && spec.model && !spec.method) spec.method = methodOf(spec.model); // the plugin needs one; the draft's name says it
+      if (!spec || typeof spec !== "object" || Array.isArray(spec) || !spec.method) return bad("f-spec-json", 'Custom JSON needs a "method".');
+    }
+    var m = editing ? findModel(editing) : null;
+    return {
+      id: editing || id, display_name: $("f-name").value.trim(), hf_repo: repo, revision: $("f-rev").value.trim(), gpus: sel,
+      context: Number($("f-ctx").value), quantization: $("f-quant").value, tool_parser: $("f-tool").value.trim(),
+      reasoning_parser: $("f-reason").value.trim(), enable_thinking: $("f-think").checked, loop_guard: $("f-guard").value,
+      max_batch_size: (m && Number(m.max_batch_size)) || undefined,
+      generation_config: Object.keys(gen).length ? gen : undefined, speculative_config: spec
+    };
+  }
+
+  // DEPLOY are the settings model.go's deploymentSettings compares: changing one recreates the deployment.
+  var DEPLOY = ["hf_repo", "revision", "context", "quantization", "tool_parser", "reasoning_parser", "enable_thinking", "generation_config", "speculative_config"];
+  function canon(v) {
+    if (v && typeof v === "object" && !Array.isArray(v)) return "{" + Object.keys(v).sort().filter(function (k) { return v[k] !== undefined; }).map(function (k) { return JSON.stringify(k) + ":" + canon(v[k]); }).join(",") + "}";
+    return JSON.stringify(v === undefined || v === "" || v === false ? null : v);
+  }
+  // A deployment whose GPU leaves the list is deleted too (model.go needsRedeploy).
+  function redeploys(m, b) { return !!(m.deploy_id || m.gpu) && (DEPLOY.some(function (k) { return canon(m[k]) !== canon(b[k]); }) || (!!m.gpu && b.gpus.indexOf(m.gpu) < 0)); }
+
+  $("form").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var btn = $("save");
+    if (btn.getAttribute("aria-busy") === "true") return;
+    var body = readForm();
+    if (!body) return;
+    var was = editing, m = was && findModel(was), redo = m && redeploys(m, body);
+    if (redo && m.status !== "scaled-to-zero" && !confirm("Saving deletes " + was + "'s deployment; the next request starts a new one (~12 min). Save?")) return;
+    var gone = false; // removed elsewhere: nothing left to save or remove
+    var session = dlgSession, here = function () { return dlg.open && dlgSession === session; }; // this dialog, not the next one
+    btn.setAttribute("aria-busy", "true");
+    $("cancel").disabled = $("d-x").disabled = $("remove").disabled = true; // a reply still to come would land unseen
+    dMsg(was ? "Saving…" : "Adding…");
+    api(was ? "PUT" : "POST", "/models", body).then(function (d) {
+      var v = d.model, cur = findModel(body.id);
+      if (v) { // show it now; the load after this confirms it
+        v.status = d.redeployed || !cur ? "scaled-to-zero" : cur.status;
+        v.last_used_unix = cur ? cur.last_used_unix : 0;
+        if (d.redeployed) delete v.gpu;
+        if (cur) S.models[S.models.indexOf(cur)] = v; else S.models = S.models.concat(v).sort(byId);
+      }
+      done(was ? (d.redeployed && m.status === "scaled-to-zero" ? "Saved; redeploys on next request." : "Saved.") : "Added."); // a confirm already said it redeploys
+      if (!was || (body.display_name || "") !== ((m && m.display_name) || "")) syncModels().then(function (err) {
+        if (!err) return;
+        var n = S.note[body.id] || note(body.id, "", "");
+        n.text = (was ? "Saved" : "Added") + "; /model updates on reload."; n.tip = err; announce(body.id + ": /model updates on reload."); // CPA reloads it later
+        if (S.flash && S.flash.id === body.id) S.flash = null; // not "Saved" twice
+        renderList();
+      });
       return load();
-    }).catch(function (e) {
-      setSettingsMsg(e.message, "err");
-    }).then(function () { $("s-save").disabled = false; });
+    }, function (err) {
+      var t = errText(err);
+      if (/model ID is taken/.test(t) && !was && lostAdd === body.id) { lostAdd = ""; load(); return done("Added."); } // the lost add went through
+      if (!here() && !err.net && !was && /model ID is taken/.test(t) && findModel(body.id)) return; // a re-add raced the lost add's settle: it's there
+      if (!here() && !err.net && !was) { if (err.kind === "ban" || err.kind === "hdr") load(); draft = "add"; draftBody = body; draftMsg = t; announce(body.id + ": " + t); return; } // the filled form comes back with Add model
+      if (!here() && !err.net) { if (err.kind === "ban" || err.kind === "hdr") load(); note(body.id, "err", (was ? "Not saved; " : "Not added; ") + "edit again.", err.message); announce(body.id + ": " + t); renderList(); return; } // closed while saving
+      if (/model ID is taken/.test(t)) return bad("f-id", t);
+      if (err.kind === "ban" || err.kind === "hdr") load(); // the banner it points to
+      if (err.kind === "key") { // the key box is behind the dialog: keep the form, reopened once a key is accepted
+        draft = was || "add"; draftBody = was ? null : body; draftMsg = was ? "" : "Not added; retry.";
+        dMsg(was ? "Not saved; save again." : "Not added; retry.", "err");
+        unlock();
+        noRefocus = true;
+        dlg.close();
+        return setTimeout(function () { $("key").focus(); });
+      }
+      if (here()) dMsg(t, "err", err.message); // the dialog staying open says it wasn't saved; a closed one's lost reply settles on its row
+      if (/^Removed elsewhere/.test(t) && was) { gone = true; dMsg("Removed elsewhere; close this.", "err", err.message); $("save").disabled = true; unlock(); focusQuiet($("cancel").offsetParent ? $("cancel") : $("d-x")); return; }
+      // A lost reply settles on the next load: closed if it went through, "Not saved" if not.
+      if (err.net && !was) lostAdd = body.id;
+      if (err.net) return settle(function () {
+        if (!was && lostAdd !== body.id) return; // a re-add's 409 already said it was added
+        lostAdd = "";
+        var now = findModel(body.id), here = dlg.open && dlgSession === session;
+        var same = function (k) { var a = now[k], b = body[k]; if (k === "loop_guard") { a = a || "off"; b = b || "off"; } if (k === "max_batch_size") { a = a || 0; b = b || 0; } return canon(a) === canon(b); };
+        var ok = now && (!was || Object.keys(body).every(same)), text = ok ? (was ? (redo && m.status === "scaled-to-zero" ? "Saved; redeploys on next request." : "Saved.") : "Added.") : was ? "Not saved; retry." : "Not added; retry.";
+        if (here) return ok ? done(text) : dMsg(text, "err");
+        if (now || was) { note(body.id, ok ? "" : "err", text); announce(body.id + ": " + text); renderList(); } // the dialog moved on: say it on the row
+        else { draft = "add"; draftBody = body; draftMsg = text; announce(body.id + ": " + text); } // the filled form waits behind Add model
+      });
+    }).then(unlock);
+    function unlock() { if (!here()) return; btn.removeAttribute("aria-busy"); $("cancel").disabled = $("d-x").disabled = false; $("remove").disabled = gone; }
+    function done(text) {
+      if (!here()) { if (/;/.test(text)) note(body.id, "", text); else flash(body.id, text.replace(/\.$/, "")); announce(body.id + ": " + text); return render(); } // the dialog closed or moved on
+      unlock();
+      focusAfter = body.id;
+      $("announce").textContent = "";
+      $("menuhost").parentNode.appendChild($("announce")); // out of the closing dialog, so it's heard
+      dlg.close();
+      if (/;/.test(text)) note(body.id, "", text); else flash(body.id, text.replace(/\.$/, "")); // "Saved" needs no line of its own
+      announce(text);
+      render();
+    }
   });
-
-  keyInput.addEventListener("input", function () {
-    keyRejected = false;
-    try { localStorage.setItem(KEY_NAME, keyInput.value); } catch (e) {}
+  // Tab stays in the dialog: embedded, it would otherwise reach the panel's toolbar.
+  dlg.addEventListener("keydown", function (e) {
+    if (e.key !== "Tab") return;
+    var f = Array.prototype.filter.call(dlg.querySelectorAll("button, input, select, textarea, summary, #d-msg[tabindex]"), function (n) { return !n.disabled && !n.closest("[inert]") && n.checkVisibility(); });
+    if (!f.length) return;
+    var i = f.indexOf(document.activeElement);
+    if (e.shiftKey && i <= 0) { e.preventDefault(); f[f.length - 1].focus(); }
+    else if (!e.shiftKey && (i < 0 || i === f.length - 1)) { e.preventDefault(); f[i < 0 ? 0 : 0].focus(); }
   });
-  keyInput.addEventListener("change", function () { load().then(loadSettings); });
-  $("refresh").addEventListener("click", function () { load(); });
+  function saving() { return $("save").getAttribute("aria-busy") === "true"; }
+  dlg.addEventListener("cancel", function (e) { if (saving()) e.preventDefault(); }); // a reply still to come would land unseen
+  $("cancel").addEventListener("click", function () { if (!saving()) dlg.close(); });
+  $("d-x").addEventListener("click", function () { if (!saving()) dlg.close(); });
+  $("remove").addEventListener("click", function () { var id = editing; if (confirmRemove(id)) dlg.close(); });
+  var focusAfter = "", noRefocus = false;
+  dlg.addEventListener("close", function () {
+    var id = editing || focusAfter, li = !noRefocus && id && rowOf(id);
+    focusAfter = "";
+    $("form").style.minHeight = ""; $("form").classList.remove("held"); $("d-body").inert = false; $("save").disabled = false;
+    $("save").removeAttribute("aria-busy"); $("cancel").disabled = $("d-x").disabled = $("remove").disabled = false; // a save still out reports on its row
+    $("res").inert = false; $("res").classList.remove("dim");
+    if ($("announce").parentNode !== $("menuhost").parentNode) { $("announce").textContent = ""; $("menuhost").parentNode.appendChild($("announce")); } // back out of the dialog, emptied
+    if (noRefocus) { noRefocus = false; pickSeq++; editing = null; return; }
+    pickSeq++;
+    editing = null;
+    if (li) li.nm.focus({ focusVisible: byKey }); else $("add").focus({ preventScroll: true }); // a new row may be below the view; a ring only after the keyboard
+  });
+  var heldBand = 0; // the blank space keepPlace added below the form: dropped once it's scrolled out of view
+  dlg.addEventListener("scroll", function () { dlg.classList.toggle("scrolled", dlg.scrollTop > 0); if (heldBand && (dlg.scrollHeight - dlg.scrollTop - dlg.clientHeight >= heldBand || dlg.scrollTop <= 0)) { heldBand = 0; $("form").style.minHeight = ""; $("form").classList.remove("held"); } });
+  // A click on the backdrop (pressed and released there, not on the scrollbar) closes the dialog.
+  var downOut = false;
+  function outside(e) { var r = dlg.getBoundingClientRect(); return e.target === dlg && (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom); }
+  dlg.addEventListener("mousedown", function (e) { downOut = outside(e); });
+  dlg.addEventListener("click", function (e) { if (downOut && outside(e) && !saving()) dlg.close(); downOut = false; });
 
-  load().then(loadSettings);
-  setInterval(load, 15000);
-  setInterval(renderList, 30000);
+  pickKey();
+  render();
+  document.documentElement.classList.remove("nokey0");
+  if (sentKey) start();
+  setInterval(function () { if (sentKey && !document.hidden) load(); }, 15000);
+  setInterval(renderList, 30000); // relative times
+  document.addEventListener("visibilitychange", function () { if (!document.hidden && sentKey) load(); });
+  window.addEventListener("blur", function () { closeMenu(); closeSettings(); }); // focus or a click left the frame
+
 })();
 </script>
 </body>

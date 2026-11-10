@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -445,6 +446,24 @@ func TestNeedsRedeploy(t *testing.T) {
 	}
 }
 
+// An empty config map in state (as the list view can leave it) is unset, not a change to redeploy for.
+func TestEmptyConfigMapsAreUnset(t *testing.T) {
+	var old Model
+	if err := json.Unmarshal([]byte(`{"id":"m","hf_repo":"O/M","gpus":["1xH200-141GB"],"context":1024,"generation_config":{},"speculative_config":{},"deploy_id":"D1","gpu":"1xH200-141GB"}`), &old); err != nil {
+		t.Fatal(err)
+	}
+	old.normalize()
+	if old.GenerationConfig != nil || old.SpeculativeConfig != nil {
+		t.Errorf("empty maps normalized to %v and %v, want nil", old.GenerationConfig, old.SpeculativeConfig)
+	}
+	// The dashboard's next edit omits both maps, so it arrives with them nil.
+	edit := Model{ID: "m", HFRepo: "O/M", GPUs: []string{"1xH200-141GB"}, Context: 1024, GPU: "1xH200-141GB"}
+	edit.normalize()
+	if edit.needsRedeploy(&old) {
+		t.Error("edit with no sampling or speculative config needs a redeploy")
+	}
+}
+
 func TestRecentlyFailedExpires(t *testing.T) {
 	s := newTestStore(t)
 	m := &Model{ID: "m", HFRepo: "O/M", GPUs: []string{"1xA100-80GB"}, Context: 1024}
@@ -455,6 +474,109 @@ func TestRecentlyFailedExpires(t *testing.T) {
 	}
 	if s.recentlyFailed("m", 1000+gpuRetryAfter)["1xA100-80GB"] {
 		t.Error("GPU should be retried after the window")
+	}
+}
+
+func TestClearFailedGPUs(t *testing.T) {
+	s := newTestStore(t)
+	for _, id := range []string{"m", "other"} {
+		_ = s.add(&Model{ID: id, HFRepo: "O/M", GPUs: []string{"1xA100-80GB"}, Context: 1024})
+		s.markGPUFailed(id, "1xA100-80GB", 1000)
+	}
+	s.clearFailedGPUs("m")
+	if s.recentlyFailed("m", 1000)["1xA100-80GB"] {
+		t.Error("cleared model should not skip its GPU")
+	}
+	if !s.recentlyFailed("other", 1000)["1xA100-80GB"] {
+		t.Error("clearing one model must not forget another model's failed GPU")
+	}
+}
+
+// Failed GPU starts survive a GPU-list-only edit and are cleared when the deployment settings change.
+// The model has no live deployment (no DeployID), so updateModelResponse makes no DeepInfra call.
+func TestUpdateModelKeepsFailedGPUsUnlessSettingsChange(t *testing.T) {
+	orig := modelStore
+	t.Cleanup(func() { modelStore = orig })
+	now := time.Now().Unix()
+	cases := []struct {
+		name     string
+		change   func(*Model)
+		wantKept bool
+	}{
+		{"display name only", func(m *Model) { m.DisplayName = "Renamed" }, true},
+		{"deployed GPU unchecked", func(m *Model) { m.GPUs = []string{"2xA100-80GB"} }, true},
+		{"context", func(m *Model) { m.Context = 2048 }, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := newTestStore(t)
+			s.idLocks = map[string]*sync.Mutex{}
+			modelStore = s
+			// GPU is set, as after a deployment, so removing it from the list counts as needing a redeploy.
+			fixture := &Model{ID: "m", HFRepo: "O/M", GPUs: []string{"1xH200-141GB", "2xA100-80GB"}, GPU: "1xH200-141GB", Context: 1024}
+			fixture.normalize() // as add and load do, so an edit doesn't look like a MaxBatchSize change
+			if err := s.add(fixture); err != nil {
+				t.Fatal(err)
+			}
+			s.markGPUFailed("m", "2xA100-80GB", now)
+			m, _ := s.get("m")
+			c.change(m)
+			body, _ := json.Marshal(m)
+			if resp := updateModelResponse("", body); resp.StatusCode != http.StatusOK {
+				t.Fatalf("update status %d: %s", resp.StatusCode, resp.Body)
+			}
+			if got := s.recentlyFailed("m", now)["2xA100-80GB"]; got != c.wantKept {
+				t.Errorf("failed GPU kept=%v want %v", got, c.wantKept)
+			}
+		})
+	}
+}
+
+// A settings change that fails to persist is rejected, so the failed GPU must stay skipped.
+func TestUpdateModelKeepsFailedGPUsWhenPersistFails(t *testing.T) {
+	orig := modelStore
+	t.Cleanup(func() { modelStore = orig })
+	now := time.Now().Unix()
+	s := newTestStore(t)
+	s.idLocks = map[string]*sync.Mutex{}
+	modelStore = s
+	fixture := &Model{ID: "m", HFRepo: "O/M", GPUs: []string{"1xH200-141GB", "2xA100-80GB"}, GPU: "1xH200-141GB", Context: 1024}
+	fixture.normalize()
+	if err := s.add(fixture); err != nil {
+		t.Fatal(err)
+	}
+	s.markGPUFailed("m", "2xA100-80GB", now)
+	s.path = filepath.Join(t.TempDir(), "nonexistent-dir\x00bad", "s.json")
+	m, _ := s.get("m")
+	m.Context = 2048
+	body, _ := json.Marshal(m)
+	if resp := updateModelResponse("", body); resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("update status %d, want 500: %s", resp.StatusCode, resp.Body)
+	}
+	if !s.recentlyFailed("m", now)["2xA100-80GB"] {
+		t.Error("failed GPU cleared although the update was not persisted")
+	}
+}
+
+func TestListModelsReturnsMaxBatchSize(t *testing.T) {
+	orig := modelStore
+	t.Cleanup(func() { modelStore = orig })
+	s := newTestStore(t)
+	s.idLocks = map[string]*sync.Mutex{}
+	modelStore = s
+	fixture := &Model{ID: "m", HFRepo: "O/M", GPUs: []string{"1xH200-141GB"}, Context: 1024, MaxBatchSize: 128}
+	fixture.normalize()
+	if err := s.add(fixture); err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Models []modelView `json:"models"`
+	}
+	if err := json.Unmarshal(listModelsResponse("").Body, &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Models) != 1 || out.Models[0].MaxBatchSize != 128 {
+		t.Errorf("listed models %+v, want max_batch_size 128", out.Models)
 	}
 }
 

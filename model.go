@@ -115,6 +115,13 @@ func (m *Model) normalize() {
 	if m.MaxBatchSize <= 0 {
 		m.MaxBatchSize = defaultMaxBatchSize
 	}
+	// An empty map is "unset": the list view omits it, so keep it nil or an edit would look like a change.
+	if len(m.GenerationConfig) == 0 {
+		m.GenerationConfig = nil
+	}
+	if len(m.SpeculativeConfig) == 0 {
+		m.SpeculativeConfig = nil
+	}
 }
 
 var gpuPattern = regexp.MustCompile(`^(\d+)x(.+)$`)
@@ -126,6 +133,12 @@ func (m *Model) needsRedeploy(old *Model) bool {
 	if old.GPU != "" && !slices.Contains(m.GPUs, old.GPU) {
 		return true
 	}
+	return m.settingsChanged(old)
+}
+
+// settingsChanged reports whether any deployment setting differs from old's, i.e. the GPU list
+// and the other per-request fields are not compared.
+func (m *Model) settingsChanged(old *Model) bool {
 	return !reflect.DeepEqual(old.deploymentSettings(), m.deploymentSettings())
 }
 
@@ -374,6 +387,13 @@ func (s *store) recentlyFailed(id string, now int64) map[string]bool {
 		}
 	}
 	return out
+}
+
+// clearFailedGPUs forgets a model's failed GPU starts, e.g. when its deployment is deleted for a settings change.
+func (s *store) clearFailedGPUs(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.failedGPUs, id)
 }
 
 func (s *store) setProvisionError(id, msg string) {

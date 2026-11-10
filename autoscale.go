@@ -86,6 +86,10 @@ func transition(callbackID string, m *Model, dep *diDeployment, now int64) (stri
 		if delErr := diDelete(callbackID, dep.DeployID); delErr != nil {
 			return "", delErr
 		}
+		// Unlink the deleted deployment so a failed create leaves the model with none, and so a
+		// diFind on this copy can't re-link it while /deploy/list still shows it.
+		modelStore.setDeployment(m.ID, "", "", "")
+		m.DeployID, m.DeepInfraName, m.GPU = "", "", ""
 		gpus, err := availableGPUs(callbackID, m, now)
 		if err != nil {
 			return "", err
@@ -119,6 +123,10 @@ func transition(callbackID string, m *Model, dep *diDeployment, now int64) (stri
 		if delErr := diDelete(callbackID, dep.DeployID); delErr != nil {
 			return "", delErr
 		}
+		// Unlink the deleted deployment so a failed create leaves the model with none, and so a
+		// diFind on this copy can't re-link it while /deploy/list still shows it.
+		modelStore.setDeployment(m.ID, "", "", "")
+		m.DeployID, m.DeepInfraName, m.GPU = "", "", ""
 		return createOn(callbackID, m, gpus, now)
 	case dep.Status == "running":
 		if runStart == 0 {
@@ -388,6 +396,7 @@ func deleteStuck(id, deployID string) {
 		return // recovered or gone
 	}
 	if err := diDelete("", deployID); err == nil {
+		modelStore.setDeployment(id, "", "", "") // unlink, so a later diFind can't re-link the deleted deployment
 		modelStore.clearRunning(id)
 		hostLog("warn", fmt.Sprintf("deepinfra-autoscale: deleted %s, stuck %s for over 2h", id, dep.Status))
 	}

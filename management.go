@@ -100,6 +100,7 @@ type modelView struct {
 	ToolParser        string         `json:"tool_parser,omitempty"`
 	ReasoningParser   string         `json:"reasoning_parser,omitempty"`
 	EnableThinking    bool           `json:"enable_thinking"`
+	MaxBatchSize      int            `json:"max_batch_size,omitempty"`
 	GenerationConfig  map[string]any `json:"generation_config,omitempty"`
 	SpeculativeConfig map[string]any `json:"speculative_config,omitempty"`
 	LoopGuard         string         `json:"loop_guard,omitempty"`
@@ -130,15 +131,24 @@ func listModelsResponse(cb string) pluginapi.ManagementResponse {
 		}
 	}
 
+	prices := make(map[string]float64, len(gpus))
+	for _, g := range gpus {
+		prices[g.Name] = g.USDPerHour
+	}
+
 	views := make([]modelView, 0, len(models))
 	for _, m := range models {
 		lastUsed, _ := modelStore.activity(m.ID)
 		dep := depByID[m.ID]
+		usd, ok := prices[m.GPU]
+		if !ok {
+			usd = gpuPrice(m.GPU) // not in this catalog fetch
+		}
 		v := modelView{
 			ID: m.ID, DisplayName: m.DisplayName, HFRepo: m.HFRepo, Revision: m.Revision, GPUs: m.GPUs, GPU: m.GPU,
 			Context: m.Context, Quantization: m.Quantization, ToolParser: m.ToolParser,
-			ReasoningParser: m.ReasoningParser, EnableThinking: m.EnableThinking, GenerationConfig: m.GenerationConfig,
-			SpeculativeConfig: m.SpeculativeConfig, LoopGuard: m.LoopGuard, DeployID: m.DeployID, LastUsedUnix: lastUsed, USDPerHour: gpuPrice(m.GPU),
+			ReasoningParser: m.ReasoningParser, EnableThinking: m.EnableThinking, MaxBatchSize: m.MaxBatchSize, GenerationConfig: m.GenerationConfig,
+			SpeculativeConfig: m.SpeculativeConfig, LoopGuard: m.LoopGuard, DeployID: m.DeployID, LastUsedUnix: lastUsed, USDPerHour: usd,
 			Status: "scaled-to-zero", MinInstances: 0, Error: modelStore.provisionError(m.ID),
 		}
 		if listErr != nil {
@@ -232,8 +242,12 @@ func updateModelResponse(cb string, body []byte) pluginapi.ManagementResponse {
 		m.DeployID, m.DeepInfraName, m.GPU = "", "", ""
 		modelStore.clearRunning(m.ID)
 	}
+	changed := m.settingsChanged(old) // before update: the store owns &m afterwards and ensureRunning may write it
 	if err := modelStore.update(&m); err != nil {
 		return jsonResponse(http.StatusInternalServerError, map[string]string{"error": "could not persist model: " + err.Error()})
+	}
+	if changed {
+		modelStore.clearFailedGPUs(m.ID) // the settings that failed on a GPU are gone; a GPU-list-only edit keeps them
 	}
 	modelStore.setProvisionError(m.ID, "")
 	return jsonResponse(http.StatusOK, map[string]any{"ok": true, "model": m, "redeployed": redeploy})

@@ -22,8 +22,8 @@ managed from the CLIProxyAPI dashboard.
   deployment fails to start (e.g. `no-gpu-available`), it moves to the next, skipping a GPU that
   failed for 10 minutes. When none is left, requests get `503 no GPU available` and the dashboard
   shows why.
-- **Add, edit and remove models on the fly** from the dashboard, from a Hugging Face repo + GPUs +
-  context.
+- **Add, edit and remove models on the fly** from the dashboard: search a Hugging Face repo and it
+  fills in the context, parsers and GPUs that fit, from the repo's metadata.
 
 Because the plugin is in the request path, **activity is tracked automatically** — no client hooks,
 no external state store, no separate worker. Model definitions are persisted so they survive a
@@ -39,7 +39,7 @@ Everything is done in the CLIProxyAPI management panel; no file edits.
 2. **Plugin Store**: search `deepinfra`, click **Install**, and confirm. It downloads the `.so` from
    the latest GitHub Release and loads it without a restart.
 3. **PLUGINS → DeepInfra Autoscale** in the sidebar: paste your DeepInfra API key under
-   **Settings** and add models. The page uses your panel login if you ticked **Remember password**;
+   the gear (Settings) and add models. The page uses your panel login if you ticked **Remember password**;
    otherwise it asks for the management key once.
 
 The API key is stored in `deepinfra-autoscale.key` (mode 0600) next to the state file, not in
