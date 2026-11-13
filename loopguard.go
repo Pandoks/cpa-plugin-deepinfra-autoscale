@@ -6,21 +6,25 @@ import (
 	"fmt"
 	"hash"
 	"hash/fnv"
+	"maps"
+	"regexp"
 	"strings"
 	"sync/atomic"
+	"unicode/utf8"
 )
 
 // Loop guard: a model's loop_guard setting watches its streamed output for degeneration. "observe"
-// only logs a loop. "on" cuts it: a loop in the answer ends the response there, since the answer is
-// already shown; a loop in thinking would leave the client with no answer, so the request is sent
-// again with the output so far and a note asking the model to finish.
+// only logs a loop. "on" holds streamed text back while a loop could be forming, so when the output
+// loops it is cut before the repeated copies reach the client; the request is then sent again with
+// the output so far and a note asking the model to finish.
 const (
 	loopGuardOff     = "off"
 	loopGuardObserve = "observe"
 	loopGuardOn      = "on"
 )
 
-// Output is looping once some loopChunk bytes of it, whitespace collapsed, have recurred
+// Output is looping once some loopChunk bytes of it, with whitespace runs collapsed and each digit run
+// read as one 0 (so a counter like "pass 67" and "pass 68" doesn't hide a copy), have recurred
 // loopRepeats times without overlapping. Reasoning also counts as looping once loopRunOn bytes pass
 // with no sentence break or newline: under a presence penalty the model trails off into an endless
 // word list instead of repeating itself. Answers are exempt because they can be one long line of JSON.
@@ -30,6 +34,14 @@ const (
 	loopRunOn      = 1500
 	loopMaxRetries = 2
 )
+
+// A copy only counts toward a loop if it starts at most loopStale bytes (whitespace collapsed) after
+// the chunk's previous copy; a later one starts the count over. A loop is cut at its chunk's second
+// copy but found only at the loopRepeats-th, so "on" holds output from the second copy of any chunk
+// that can still reach loopRepeats, until it loops or goes stale. In the 1757 repeat loops logged by
+// the guard so far, copies were at most 21427 bytes apart, so all are still found and none leak.
+// Normal output is held 132 bytes at the median and 4.7 KB at the 99th percentile.
+const loopStale = 24576
 
 const (
 	ruleRepeat = "repeat"
@@ -41,10 +53,12 @@ type chunkSeen struct{ last, count, second int }
 type loopDetector struct {
 	runOn    bool   // apply the run-on rule
 	runStart int    // raw offset just past the last sentence break
+	seedLen  int    // raw bytes of text the client already had when this detector started
 	text     []byte // raw output
-	norm     []byte // output with whitespace runs collapsed to one space
+	norm     []byte // output with whitespace runs collapsed to one space and digit runs to one 0
 	raw      []int  // raw offset of each norm byte
 	seen     map[uint64]*chunkSeen
+	live     []*chunkSeen // chunks seen at least twice, maybe still recurring
 	hash     hash.Hash64
 }
 
@@ -69,6 +83,11 @@ func (d *loopDetector) add(s string) (keep int, rule string) {
 				continue
 			}
 			c = ' '
+		} else if '0' <= c && c <= '9' {
+			if p := len(d.text) - 2; p >= 0 && '0' <= d.text[p] && d.text[p] <= '9' {
+				continue
+			}
+			c = '0'
 		}
 		d.norm = append(d.norm, c)
 		d.raw = append(d.raw, len(d.text)-1)
@@ -85,17 +104,78 @@ func (d *loopDetector) add(s string) (keep int, rule string) {
 			continue
 		}
 		if at-e.last < loopChunk {
+			// The chunk recurs overlapping itself: the text repeats with a period under loopChunk, so
+			// the cut goes here and keeps one period, if the run goes on to a counted copy.
+			if e.count == 1 && e.second == 0 {
+				e.second = d.raw[at]
+				d.live = append(d.live, e)
+			}
 			continue
 		}
-		e.last, e.count = at, e.count+1
-		if e.count == 2 {
-			e.second = d.raw[at]
+		if at-e.last > loopStale {
+			e.last, e.count, e.second = at, 1, 0
+			continue
 		}
+		if e.second == 0 || e.count == 1 && at-e.last > 2*loopChunk {
+			e.second = d.raw[at]
+			d.live = append(d.live, e)
+		}
+		e.last, e.count = at, e.count+1
 		if e.count >= loopRepeats {
 			return e.second, ruleRepeat
 		}
 	}
 	return 0, ""
+}
+
+// seed starts the detector on text the client already has from an earlier attempt, so copies in a
+// retry count against copies already sent. A cut can't reach into that text, so the next copy of a
+// seeded chunk becomes its cut point, and a chunk of the loop just cut ends the retry at its next copy.
+func (d *loopDetector) seed(text string, cut map[uint64]bool) {
+	runOn := d.runOn
+	d.runOn = false
+	d.add(text)
+	d.runOn, d.runStart, d.seedLen, d.live = runOn, len(d.text), len(d.text), nil
+	for k, e := range d.seen {
+		e.second = 0
+		if cut[k] {
+			e.count, e.last = loopRepeats-1, len(d.norm)-loopChunk
+		}
+	}
+}
+
+// loopChunks returns the chunks repeated from offset keep on: the loop being cut there.
+func (d *loopDetector) loopChunks(keep int, into map[uint64]bool) {
+	for k, e := range d.seen {
+		if e.count >= 2 && e.second >= keep {
+			into[k] = true
+		}
+	}
+}
+
+// hold returns the earliest raw offset that could still become a keep point: the newest chunk, the
+// second copy of a chunk still recurring (or its overlapping recurrence, until the run ends), or the start of the current run-on stretch, which is the
+// text since the last sentence break. Output before it is safe to send.
+func (d *loopDetector) hold() int {
+	h := len(d.text)
+	if len(d.norm) > 0 {
+		h = d.raw[max(0, len(d.norm)-loopChunk)]
+	}
+	live := d.live[:0]
+	for _, e := range d.live {
+		if e.second > 0 && (e.count >= 2 && len(d.norm)-e.last <= loopStale+loopChunk || len(d.norm)-e.last <= 3*loopChunk) {
+			live = append(live, e)
+			h = min(h, e.second)
+		}
+	}
+	d.live = live
+	if d.runOn {
+		h = min(h, d.runStart)
+	}
+	for h > 0 && h < len(d.text) && !utf8.RuneStart(d.text[h]) {
+		h--
+	}
+	return h
 }
 
 // sentenceBreak reports whether text ends a sentence or line: a newline, sentence punctuation
@@ -163,10 +243,17 @@ func encodeSSE(name string, data any) []byte {
 	return []byte("event: " + name + "\ndata: " + string(raw) + "\n\n")
 }
 
+// loopNudges are sent as the user turn after the output so far. A plain user turn gets answered and
+// narrated ("The user says my response was cut off…"), so they are worded as the system reminders
+// Claude Code puts in user turns, which the model treats as context rather than something to reply to.
 var loopNudges = map[string]string{
-	ruleRepeat: "You started repeating the same text over and over, so your response was cut off there. Do not repeat it again. Continue from where you left off and finish the task.",
-	ruleRunOn:  "Your reasoning turned into a long list of words with no sentences, so your response was cut off there. Do not continue that list. Continue from where you left off and finish the task.",
+	ruleRepeat: "<system-reminder>Your previous message stopped where it began repeating itself. Continue the task from exactly that point, without writing any of that text again. This is an automatic note, not a message from the user: do not mention it, the stop or the repetition.</system-reminder>",
+	ruleRunOn:  "<system-reminder>Your previous message stopped where your reasoning turned into a list of words with no sentences. Continue the task from exactly that point, in sentences. This is an automatic note, not a message from the user: do not mention it, the stop or the list.</system-reminder>",
 }
+
+// echoesNudge reports whether a retry's answer opens by talking about the cut, as models do when
+// they narrate the note above.
+var echoesNudge = regexp.MustCompile(`(?i)^[^\n]{0,200}?\b(cut off|cut short|truncated|repeat(ed|ing)?|repetition|degenerat\w*|loop(ed|ing)?)\b`).MatchString
 
 var guardSeq atomic.Int64
 
@@ -182,6 +269,18 @@ type guard struct {
 	anthropic  bool
 	loops      int
 	chars      int
+	// compaction is Claude Code asking for a summary; end holds its upstream message_delta and
+	// message_stop until the reply is known to have text.
+	compaction, thinkingOff bool
+	end                     [][]byte
+
+	// The current attempt's detectors, and its output held back from the client.
+	det, detReasoning  loopDetector
+	observed, echoSeen bool
+	held               []outEvent
+	// cutChunks are the chunks of loops cut so far, and attemptStart the first block of this attempt.
+	cutChunks    map[uint64]bool
+	attemptStart int
 
 	// Anthropic: the assistant content so far, one entry per downstream block index.
 	blocks []map[string]any
@@ -195,8 +294,13 @@ func (g *guard) logf(format string, args ...any) {
 	hostLog("info", fmt.Sprintf("loopguard[%d] model=%s format=%s mode=%s: ", g.id, g.r.Model, g.r.SourceFormat, g.mode)+fmt.Sprintf(format, args...))
 }
 
-func (g *guard) emit(payload []byte) bool {
-	return streamEmit(g.downstream, payload) == nil
+func (g *guard) emit(payloads ...[]byte) bool {
+	for _, p := range payloads {
+		if streamEmit(g.downstream, p) != nil {
+			return false
+		}
+	}
+	return true
 }
 
 // pump reads one upstream attempt to the end, or until a loop hands off to recover.
@@ -209,69 +313,200 @@ func (g *guard) pump(hostStream string, attempt int) {
 		}
 	}()
 	var rd sseReader
-	det, detReasoning := loopDetector{}, loopDetector{runOn: true}
-	observed := false
+	g.startAttempt(attempt)
 	for {
 		chunk, err := httpStreamRead(hostStream)
 		if err != nil {
 			httpStreamClose(hostStream)
+			g.emit(append(g.flush(), g.end...)...)
 			streamClose(g.downstream, err.Error())
 			return
 		}
 		for _, ev := range rd.feed(chunk.Payload) {
-			out, piece, reasoningPiece, ok := g.translate(ev, attempt, &det, &detReasoning)
-			if !ok {
-				continue
-			}
-			g.chars += len(piece) + len(reasoningPiece)
-			for _, d := range []struct {
-				det  *loopDetector
-				text string
-			}{{&det, piece}, {&detReasoning, reasoningPiece}} {
-				if d.text == "" || observed {
-					continue
-				}
-				keep, rule := d.det.add(d.text)
-				if rule == "" {
-					continue
-				}
-				g.loops++
-				g.logf("LOOP attempt=%d reasoning=%v rule=%s at=%d keep=%d", attempt, d.det == &detReasoning, rule, len(d.det.text), keep)
-				if g.mode == loopGuardObserve {
-					observed = true
-					continue
-				}
-				httpStreamClose(hostStream)
-				g.truncateCurrent(d.det == &detReasoning, string(d.det.text[:keep]))
-				g.recoverLoop(attempt, d.det == &detReasoning, rule)
-				return
-			}
-			if out != nil && !g.emit(out) {
+			out, rule := g.step(ev, attempt)
+			if !g.emit(out...) {
 				httpStreamClose(hostStream)
 				streamClose(g.downstream, "")
+				return
+			}
+			if rule != "" {
+				httpStreamClose(hostStream)
+				g.recoverLoop(attempt, rule)
 				return
 			}
 		}
 		if chunk.Error != "" || chunk.Done {
 			httpStreamClose(hostStream)
+			g.emit(g.flush()...)
 			g.logf("END attempt=%d loops=%d chars=%d", attempt, g.loops, g.chars)
+			if chunk.Error == "" && g.emptySummary() && g.retryThinkingOff(attempt) {
+				return
+			}
+			g.emit(g.end...)
 			streamClose(g.downstream, chunk.Error)
 			return
 		}
 	}
 }
 
+// startAttempt resets the detectors for an upstream attempt. An OpenAI retry continues the same
+// message, so its detectors start on the message so far.
+func (g *guard) startAttempt(attempt int) {
+	g.det, g.detReasoning, g.observed, g.echoSeen, g.attemptStart = loopDetector{}, loopDetector{runOn: true}, false, false, len(g.blocks)
+	if attempt > 0 && !g.anthropic {
+		g.det.seed(g.content, g.cutChunks)
+		g.detReasoning.seed(g.reasoning, g.cutChunks)
+	}
+}
+
+// outEvent is one translated event on its way to the client.
+type outEvent struct {
+	raw       []byte         // sent as is when msg is nil
+	name      string         // SSE event name
+	msg       map[string]any // the event, encoded when sent
+	delta     map[string]any // holds the event's output text under key; nil if it has none
+	key       string
+	reasoning bool
+	start, n  int // offset of the text in its detector's output, and the output bytes it carries
+}
+
+func (e *outEvent) encode() []byte {
+	if e.msg == nil {
+		return e.raw
+	}
+	return encodeSSE(e.name, e.msg)
+}
+
+// step tracks one upstream event and returns the payloads now due to the client. With "on", output
+// text is held while it could be cut, and any other event first flushes what is held. A non-empty
+// rule means the output looped and was cut there.
+func (g *guard) step(ev sseEvent, attempt int) (out [][]byte, rule string) {
+	e, piece, reasoningPiece, ok := g.translate(ev, attempt)
+	if !ok {
+		return nil, ""
+	}
+	g.chars += len(piece) + len(reasoningPiece)
+	if g.compaction && (e.msg["type"] == "message_delta" || e.msg["type"] == "message_stop") {
+		g.end = append(g.end, e.encode())
+		return g.flush(), ""
+	}
+	if g.mode != loopGuardOn || e.delta == nil {
+		if ev.name != "ping" {
+			out = g.flush()
+		}
+		out = append(out, e.encode())
+	} else {
+		e.start, e.n = len(g.det.text), len(piece)+len(reasoningPiece)
+		if e.reasoning {
+			e.start = len(g.detReasoning.text)
+		}
+		g.held = append(g.held, e)
+	}
+	for _, d := range []struct {
+		det  *loopDetector
+		text string
+	}{{&g.det, piece}, {&g.detReasoning, reasoningPiece}} {
+		if d.text == "" || g.observed {
+			continue
+		}
+		keep, rule := d.det.add(d.text)
+		if rule == "" {
+			continue
+		}
+		reasoning := d.det == &g.detReasoning
+		g.loops++
+		g.logf("LOOP attempt=%d reasoning=%v rule=%s at=%d keep=%d", attempt, reasoning, rule, len(d.det.text), keep)
+		if g.mode == loopGuardObserve {
+			g.observed = true
+			continue
+		}
+		for keep > 0 && !utf8.RuneStart(d.det.text[keep]) {
+			keep--
+		}
+		keep = max(keep, d.det.seedLen)
+		if g.cutChunks == nil {
+			g.cutChunks = map[uint64]bool{}
+		}
+		d.det.loopChunks(keep, g.cutChunks)
+		if leaked := g.cut(reasoning, keep); leaked > 0 {
+			g.logf("LEAK attempt=%d bytes=%d", attempt, leaked)
+		}
+		kept := d.det.text[:keep]
+		if g.anthropic {
+			kept = kept[d.det.seedLen:]
+		}
+		g.truncateCurrent(reasoning, string(kept))
+		return append(out, g.flush()...), rule
+	}
+	// Log a retry's answer that opens by narrating the note it was sent.
+	if t := g.det.text[g.det.seedLen:]; attempt > 0 && piece != "" && !g.echoSeen && (len(t) >= 200 || bytes.IndexByte(t, '\n') >= 0) {
+		g.echoSeen = true
+		if echoesNudge(string(t)) {
+			g.logf("ECHO attempt=%d: %q", attempt, truncate(string(t), 120))
+		}
+	}
+	return append(out, g.release()...), ""
+}
+
+// release returns the held events that can no longer be cut.
+func (g *guard) release() (out [][]byte) {
+	holds := [2]int{g.det.hold(), g.detReasoning.hold()}
+	for len(g.held) > 0 {
+		e, h := &g.held[0], holds[0]
+		if e.reasoning {
+			h = holds[1]
+		}
+		if e.start+e.n > h {
+			break
+		}
+		out = append(out, e.encode())
+		g.held = g.held[1:]
+	}
+	return out
+}
+
+func (g *guard) flush() (out [][]byte) {
+	for i := range g.held {
+		out = append(out, g.held[i].encode())
+	}
+	g.held = nil
+	return out
+}
+
+// cut drops the held looping text from offset keep on, and returns how many bytes past keep were
+// already released.
+func (g *guard) cut(reasoning bool, keep int) (leaked int) {
+	kept, first := g.held[:0], true
+	for _, e := range g.held {
+		if e.reasoning == reasoning {
+			if first {
+				leaked, first = max(0, e.start-keep), false
+			}
+			if e.start >= keep {
+				continue
+			}
+			if text := str(e.delta[e.key]); e.start+len(text) > keep {
+				e.delta[e.key] = text[:keep-e.start]
+			}
+		}
+		kept = append(kept, e)
+	}
+	g.held = kept
+	return leaked
+}
+
 // translate tracks one upstream event and returns what to send downstream plus any new output text.
-func (g *guard) translate(ev sseEvent, attempt int, det, detReasoning *loopDetector) (out []byte, piece, reasoningPiece string, ok bool) {
+func (g *guard) translate(ev sseEvent, attempt int) (e outEvent, piece, reasoningPiece string, ok bool) {
 	if !g.anthropic {
 		if string(ev.data) == "[DONE]" {
-			return []byte("data: [DONE]\n\n"), "", "", true
+			return outEvent{raw: []byte("data: [DONE]\n\n")}, "", "", true
 		}
 		var chunk map[string]any
 		if json.Unmarshal(ev.data, &chunk) != nil {
-			return nil, "", "", false
+			return e, "", "", false
 		}
 		g.lastChunk = chunk
+		e.msg = chunk
 		choices, _ := chunk["choices"].([]any)
 		if len(choices) > 0 {
 			choice, _ := choices[0].(map[string]any)
@@ -281,28 +516,38 @@ func (g *guard) translate(ev sseEvent, attempt int, det, detReasoning *loopDetec
 					delete(delta, "role")
 				}
 				piece, _ = delta["content"].(string)
-				reasoningPiece, _ = delta["reasoning_content"].(string)
+				reasoningKey := "reasoning_content"
+				reasoningPiece, _ = delta[reasoningKey].(string)
 				if reasoningPiece == "" {
-					reasoningPiece, _ = delta["reasoning"].(string)
+					reasoningKey = "reasoning"
+					reasoningPiece, _ = delta[reasoningKey].(string)
 				}
 				if delta["tool_calls"] != nil {
 					g.toolCalls = true
 				}
 				g.content += piece
 				g.reasoning += reasoningPiece
+				// Held chunks carry one kind of text and nothing else, so a cut can trim them.
+				if (piece == "") != (reasoningPiece == "") && delta["tool_calls"] == nil && choice["finish_reason"] == nil {
+					e.delta, e.key, e.reasoning = delta, "content", reasoningPiece != ""
+					if e.reasoning {
+						e.key = reasoningKey
+					}
+				}
 			}
 		}
-		return encodeSSE("", chunk), piece, reasoningPiece, true
+		return e, piece, reasoningPiece, true
 	}
 
 	var msg map[string]any
 	if json.Unmarshal(ev.data, &msg) != nil {
-		return nil, "", "", false
+		return e, "", "", false
 	}
+	e.name, e.msg = ev.name, msg
 	switch msg["type"] {
 	case "message_start":
 		if attempt > 0 {
-			return nil, "", "", false
+			return e, "", "", false
 		}
 	case "content_block_start":
 		block, _ := msg["content_block"].(map[string]any)
@@ -310,7 +555,18 @@ func (g *guard) translate(ev sseEvent, attempt int, det, detReasoning *loopDetec
 		for k, v := range block {
 			g.blocks[len(g.blocks)-1][k] = v
 		}
-		*det, *detReasoning = loopDetector{}, loopDetector{runOn: true}
+		g.det, g.detReasoning, g.echoSeen = loopDetector{}, loopDetector{runOn: true}, false
+		// A retry's block continues the same kind of block from earlier attempts.
+		for i := g.attemptStart - 1; attempt > 0 && i >= 0; i-- {
+			if b := g.blocks[i]; b["type"] == block["type"] {
+				if b["type"] == "thinking" {
+					g.detReasoning.seed(str(b["thinking"]), g.cutChunks)
+				} else {
+					g.det.seed(str(b["text"]), g.cutChunks)
+				}
+				break
+			}
+		}
 		msg["index"] = len(g.blocks) - 1
 	case "content_block_delta", "content_block_stop":
 		if len(g.blocks) == 0 {
@@ -323,14 +579,16 @@ func (g *guard) translate(ev sseEvent, attempt int, det, detReasoning *loopDetec
 		case "thinking_delta":
 			reasoningPiece, _ = delta["thinking"].(string)
 			block["thinking"] = str(block["thinking"]) + reasoningPiece
+			e.delta, e.key, e.reasoning = delta, "thinking", true
 		case "text_delta":
 			piece, _ = delta["text"].(string)
 			block["text"] = str(block["text"]) + piece
+			e.delta, e.key = delta, "text"
 		case "signature_delta":
 			block["signature"], _ = delta["signature"].(string)
 		}
 	}
-	return encodeSSE(ev.name, msg), piece, reasoningPiece, true
+	return e, piece, reasoningPiece, true
 }
 
 // truncateCurrent cuts the looping text back to its first copy of the repeated unit.
@@ -351,25 +609,17 @@ func (g *guard) truncateCurrent(reasoning bool, keep string) {
 	}
 }
 
-// recoverLoop ends the response after a loop in the answer, or asks the model to finish after a
-// loop in thinking.
-func (g *guard) recoverLoop(attempt int, reasoning bool, rule string) {
+// recoverLoop asks the model to finish after a loop, at most loopMaxRetries times and never after a
+// tool call; otherwise it ends the response where the loop was cut.
+func (g *guard) recoverLoop(attempt int, rule string) {
 	if g.anthropic {
 		g.emit(encodeSSE("content_block_stop", map[string]any{"type": "content_block_stop", "index": len(g.blocks) - 1}))
 	}
-	if !reasoning || attempt >= loopMaxRetries || g.hasToolUse() {
+	if attempt >= loopMaxRetries || g.hasToolUse() {
 		g.finish()
 		return
 	}
-
-	body := map[string]any{}
-	for k, v := range g.body {
-		body[k] = v
-	}
-	messages, _ := g.body["messages"].([]any)
-	body["messages"] = append(append([]any{}, messages...), g.assistantMessage(), map[string]any{"role": "user", "content": loopNudges[rule]})
-	payload, _ := json.Marshal(body)
-
+	payload, _ := json.Marshal(loopRetry(g.body, g.assistantMessage(), rule))
 	stream, err := httpDoStream(g.r.HostCallbackID, "POST", g.url, g.headers, payload)
 	if err != nil {
 		g.logf("continue failed: %v", err)
@@ -382,6 +632,54 @@ func (g *guard) recoverLoop(attempt int, reasoning bool, rule string) {
 		return
 	}
 	g.pump(stream.StreamID, attempt+1)
+}
+
+// loopRetry is the recovery recipe: the request a retry sends, built from the original request, the
+// output so far and the rule that fired. The default appends the output and a note asking the model
+// to continue without repeating itself.
+var loopRetry = func(original, assistant map[string]any, rule string) map[string]any {
+	body := map[string]any{}
+	for k, v := range original {
+		body[k] = v
+	}
+	messages, _ := original["messages"].([]any)
+	body["messages"] = append(append([]any{}, messages...), assistant, map[string]any{"role": "user", "content": loopNudges[rule]})
+	return body
+}
+
+// emptySummary reports whether a compaction reply ended with no text. Claude Code reads the summary
+// from the text and fails the compaction without it, even when the summary is in thinking.
+func (g *guard) emptySummary() bool {
+	if !g.compaction || g.thinkingOff || g.hasToolUse() {
+		return false
+	}
+	for _, b := range g.blocks {
+		if strings.TrimSpace(str(b["text"])) != "" {
+			return false
+		}
+	}
+	return true
+}
+
+// retryThinkingOff sends the request again with thinking off, so the model can only answer in text.
+func (g *guard) retryThinkingOff(attempt int) bool {
+	g.thinkingOff = true
+	body := maps.Clone(g.body)
+	body["thinking"] = map[string]any{"type": "disabled"}
+	payload, _ := json.Marshal(body)
+	stream, err := httpDoStream(g.r.HostCallbackID, "POST", g.url, g.headers, payload)
+	if err != nil {
+		g.logf("thinking-off retry failed: %v", err)
+		return false
+	}
+	if stream.StatusCode >= 400 {
+		g.logf("thinking-off retry failed: %d %s", stream.StatusCode, truncate(drainStreamError(stream.StreamID), 300))
+		return false
+	}
+	g.logf("EMPTY attempt=%d: compaction reply had no text, retrying with thinking off", attempt)
+	g.end = nil
+	g.pump(stream.StreamID, attempt+1)
+	return true
 }
 
 func (g *guard) hasToolUse() bool {

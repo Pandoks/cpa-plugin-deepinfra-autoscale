@@ -277,6 +277,7 @@
 
           <div><label for="f-quant">Quantization</label><select id="f-quant"></select></div>
           <div><label for="f-guard">Loop guard</label><select id="f-guard"><option value="off">Off</option><option value="on">On</option><option value="observe" title="Log loops only">Observe</option></select></div>
+          <div><label for="f-maxin">Max input tokens</label><input id="f-maxin" type="number" min="1" step="1" placeholder="off" title="Claude Code compacts a conversation above it"></div>
           <div><label for="f-spec">Speculative decoding</label><select id="f-spec"></select></div>
           <div id="f-spec-n-box"><label for="f-spec-n">Tokens per step</label><input id="f-spec-n" type="number" min="1" max="16"></div>
           <div id="f-draft-box" class="wide"><label for="f-draft">Draft repo</label><input id="f-draft" type="text" list="f-drafts" spellcheck="false" placeholder="Owner/Draft-Model"><datalist id="f-drafts"></datalist><datalist id="tool-parsers"></datalist><datalist id="reason-parsers"></datalist></div>
@@ -1616,6 +1617,7 @@
     $("f-reason").value = m.reasoning_parser || "";
     $("f-think").checked = !!m.enable_thinking;
     $("f-guard").value = m.loop_guard || "off";
+    $("f-maxin").value = m.max_input_tokens || "";
     GEN.forEach(function (g) { var v = (m.generation_config || {})[g[0]]; $("g-" + g[0]).value = v != null ? v : ""; });
     sampOpen = sampOpen || GEN.some(function (g) { return $("g-" + g[0]).value !== ""; }); // set values are never hidden behind a closed "Sampling"; a re-pick keeps it as it was
     setSpec(m.speculative_config);
@@ -1889,6 +1891,8 @@
     var was0 = editing ? findModel(editing) || {} : {};
     if ($("f-tool").value.trim() && !known(TOOL_PARSERS, $("f-tool").value.trim()) && $("f-tool").value.trim() !== was0.tool_parser) return bad("f-tool", "Unknown tool parser; pick one from the list.");
     if ($("f-reason").value.trim() && !known(REASON_PARSERS, $("f-reason").value.trim()) && $("f-reason").value.trim() !== was0.reasoning_parser) return bad("f-reason", "Unknown reasoning parser; pick one from the list.");
+    var maxIn = $("f-maxin").value.trim();
+    if ($("f-maxin").validity.badInput || maxIn !== "" && !(Number(maxIn) >= 1 && Number.isInteger(Number(maxIn)))) return bad("f-maxin", "Max input tokens must be a whole number, e.g. 49152.");
     var mode = $("f-spec").value, n = Number($("f-spec-n").value) || undefined, spec;
     if (mode === "mtp" || mode === "ngram") spec = { method: mode === "mtp" && ($("f-spec").getAttribute("data-builtin") === "dspark" || (hf || {}).dspark || /deepseek_v41/.test((hf || {}).mt || "")) ? "dspark" : mode, num_speculative_tokens: n }; // vLLM: V4.1 has no classic MTP
     else if (mode === "draft") {
@@ -1904,7 +1908,7 @@
       id: editing || id, display_name: $("f-name").value.trim(), hf_repo: repo, revision: $("f-rev").value.trim(), gpus: sel,
       context: Number($("f-ctx").value), quantization: $("f-quant").value, tool_parser: $("f-tool").value.trim(),
       reasoning_parser: $("f-reason").value.trim(), enable_thinking: $("f-think").checked, loop_guard: $("f-guard").value,
-      max_batch_size: (m && Number(m.max_batch_size)) || undefined,
+      max_batch_size: (m && Number(m.max_batch_size)) || undefined, max_input_tokens: Number(maxIn) || undefined,
       generation_config: Object.keys(gen).length ? gen : undefined, speculative_config: spec
     };
   }
@@ -1972,7 +1976,7 @@
         if (!was && lostAdd !== body.id) return; // a re-add's 409 already said it was added
         lostAdd = "";
         var now = findModel(body.id), here = dlg.open && dlgSession === session;
-        var same = function (k) { var a = now[k], b = body[k]; if (k === "loop_guard") { a = a || "off"; b = b || "off"; } if (k === "max_batch_size") { a = a || 0; b = b || 0; } return canon(a) === canon(b); };
+        var same = function (k) { var a = now[k], b = body[k]; if (k === "loop_guard") { a = a || "off"; b = b || "off"; } if (k === "max_batch_size" || k === "max_input_tokens") { a = a || 0; b = b || 0; } return canon(a) === canon(b); };
         var ok = now && (!was || Object.keys(body).every(same)), text = ok ? (was ? (redo && m.status === "scaled-to-zero" ? "Saved; redeploys on next request." : "Saved.") : "Added.") : was ? "Not saved; retry." : "Not added; retry.";
         if (here) return ok ? done(text) : dMsg(text, "err");
         if (now || was) { note(body.id, ok ? "" : "err", text); announce(body.id + ": " + text); renderList(); } // the dialog moved on: say it on the row

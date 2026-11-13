@@ -104,6 +104,7 @@ type modelView struct {
 	GenerationConfig  map[string]any `json:"generation_config,omitempty"`
 	SpeculativeConfig map[string]any `json:"speculative_config,omitempty"`
 	LoopGuard         string         `json:"loop_guard,omitempty"`
+	MaxInputTokens    int64          `json:"max_input_tokens,omitempty"`
 	Status            string         `json:"status"`
 	MinInstances      int            `json:"min_instances"`
 	DeployID          string         `json:"deploy_id,omitempty"`
@@ -148,7 +149,7 @@ func listModelsResponse(cb string) pluginapi.ManagementResponse {
 			ID: m.ID, DisplayName: m.DisplayName, HFRepo: m.HFRepo, Revision: m.Revision, GPUs: m.GPUs, GPU: m.GPU,
 			Context: m.Context, Quantization: m.Quantization, ToolParser: m.ToolParser,
 			ReasoningParser: m.ReasoningParser, EnableThinking: m.EnableThinking, MaxBatchSize: m.MaxBatchSize, GenerationConfig: m.GenerationConfig,
-			SpeculativeConfig: m.SpeculativeConfig, LoopGuard: m.LoopGuard, DeployID: m.DeployID, LastUsedUnix: lastUsed, USDPerHour: usd,
+			SpeculativeConfig: m.SpeculativeConfig, LoopGuard: m.LoopGuard, MaxInputTokens: m.MaxInputTokens, DeployID: m.DeployID, LastUsedUnix: lastUsed, USDPerHour: usd,
 			Status: "scaled-to-zero", MinInstances: 0, Error: modelStore.provisionError(m.ID),
 		}
 		if listErr != nil {

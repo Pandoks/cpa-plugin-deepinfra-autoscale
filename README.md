@@ -69,7 +69,7 @@ plugins:
 - UI (no auth): `GET /v0/resource/plugins/deepinfra-autoscale/dashboard`
 - JSON API (management-authenticated, `Authorization: Bearer <management secret-key>`):
   - `GET /v0/management/deepinfra-autoscale/models` — list models, GPU catalog + prices, idle window
-  - `POST .../models` — add `{id, hf_repo, revision?, gpus, context, quantization?, tool_parser?, reasoning_parser?, enable_thinking?, generation_config?, speculative_config?, loop_guard?}`
+  - `POST .../models` — add `{id, hf_repo, revision?, gpus, context, quantization?, tool_parser?, reasoning_parser?, enable_thinking?, generation_config?, speculative_config?, loop_guard?, max_input_tokens?}`
   - `PUT .../models` — edit a model; same body as add, `id` picks the model
   - `DELETE .../models?id=<id>` — remove and tear down
   - `POST .../models/wake?id=<id>` / `.../models/sleep?id=<id>` — manual start / scale-to-zero
@@ -84,17 +84,33 @@ model runs on the same GPUs and vLLM downloads it from Hugging Face itself, e.g.
 `{"method":"dflash","model":"Blackfrost-AI/RED-SNOW-5.3-FLASH-DFlash2-STAGE2","num_speculative_tokens":8}`.
 
 `loop_guard` watches a model's streamed responses for degeneration: the same 128 characters recurring
-6 times, or, in thinking, 1500 bytes with no sentence break or newline (the endless word lists a
-presence penalty produces). With `on`, a loop in the answer ends the response there; a loop in thinking
-is cut, and the request is sent again with the output so far and a note asking the model to finish, at
-most twice and never after a tool call. `observe` only logs loops; `off` is the default.
+6 times, each copy within 24576 bytes of the last (whitespace runs and digit runs each count as one
+character, so a counter like "pass 67", "pass 68" doesn't hide a repeat), or, in thinking, 1500 bytes with no sentence break or
+newline (the endless word lists a presence penalty produces). With `on`, streamed text is held back only
+while a loop could be forming: from the second copy of any 128 characters still recurring, the last 128
+characters, and in thinking the text since the last sentence break. So a loop is cut before its second
+copy is sent (for a repeat shorter than 128 characters, after its first copy), and other output is about
+130 bytes behind. The request is then sent again with the output so far and a note, worded as a system
+reminder so the model doesn't narrate it, asking the model to finish, at most twice and never after a
+tool call. The retry is checked against what the client already has, so a copy of the loop just cut ends
+it at once. A Claude Code
+compaction whose reply has no text (the summary went into thinking) is sent again once with thinking off.
+`observe` only logs loops; `off` is the default.
+
+`max_input_tokens` makes Claude Code compact a long conversation: a Claude Code request whose estimated
+input is larger gets `400 prompt is too long: N tokens > M maximum` without reaching DeepInfra, and
+Claude Code compacts and retries on that message. The estimate is the request's size divided by 3
+bytes, which overestimates RED-SNOW's tokens (by about 1.3 times on real Claude Code requests). Claude
+Code's compaction request is never rejected. A compacted conversation cannot shrink below its summary,
+last turn and re-read files (62-71k estimated tokens in testing), so it is rejected only once it grows
+by more than a quarter of `max_input_tokens` past its first request.
 
 Adding a model does **not** provision GPUs; it becomes routable immediately and spins up on first
 use (or an explicit Wake). `gpus` are DeepInfra config strings, e.g. `["1xB300-270GB","2xH200-141GB"]`;
 order doesn't matter, since the cheapest free one is tried first. A stopped deployment is restarted only
 when its GPU is still the cheapest free one; otherwise it is replaced on the cheaper GPU.
 
-Editing the name in Claude Code, the loop guard or the GPU list keeps the deployment (a new GPU list
+Editing the name in Claude Code, the loop guard, `max_input_tokens` or the GPU list keeps the deployment (a new GPU list
 applies at the next wake, unless the deployment's GPU was removed). Editing anything else deletes the
 deployment, and the next request provisions one with the new settings.
 

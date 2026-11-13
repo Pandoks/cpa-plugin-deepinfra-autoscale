@@ -39,6 +39,9 @@ type Model struct {
 	SpeculativeConfig map[string]any `json:"speculative_config,omitempty"`
 	// LoopGuard is "on", "observe" or "off" (the default); see loopguard.go.
 	LoopGuard string `json:"loop_guard,omitempty"`
+	// MaxInputTokens, when set, rejects a Claude Code request whose estimated input is larger, so
+	// Claude Code compacts the conversation; see estimateTokens.
+	MaxInputTokens int64 `json:"max_input_tokens,omitempty"`
 
 	// Deployment linkage, learned at create/reconcile time and persisted. GPU is the config the
 	// deployment was created on.
@@ -96,6 +99,9 @@ func (m *Model) validate() error {
 	default:
 		return fmt.Errorf("loop_guard must be on, observe or off, not %q", m.LoopGuard)
 	}
+	if m.MaxInputTokens < 0 {
+		return fmt.Errorf("max_input_tokens must not be negative")
+	}
 	return nil
 }
 
@@ -127,8 +133,8 @@ func (m *Model) normalize() {
 var gpuPattern = regexp.MustCompile(`^(\d+)x(.+)$`)
 
 // needsRedeploy reports whether updating a model from old to m invalidates its deployment: any
-// setting baked in at creation changed, or its GPU was taken off the list. The name in Claude Code
-// and the loop guard apply per request, and a new GPU list applies at the next wake.
+// setting baked in at creation changed, or its GPU was taken off the list. The name in Claude Code,
+// the loop guard and max_input_tokens apply per request, and a new GPU list applies at the next wake.
 func (m *Model) needsRedeploy(old *Model) bool {
 	if old.GPU != "" && !slices.Contains(m.GPUs, old.GPU) {
 		return true
@@ -143,7 +149,7 @@ func (m *Model) settingsChanged(old *Model) bool {
 }
 
 func (m Model) deploymentSettings() Model {
-	m.DisplayName, m.LoopGuard, m.GPUs = "", "", nil
+	m.DisplayName, m.LoopGuard, m.GPUs, m.MaxInputTokens = "", "", nil, 0
 	m.DeployID, m.DeepInfraName, m.GPU = "", "", ""
 	return m
 }

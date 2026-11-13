@@ -5,7 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
+	"math"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
@@ -83,6 +87,14 @@ func prepareUpstream(r *executorRequest) (url string, headers map[string][]strin
 	if id == "" || !modelStore.has(id) {
 		return "", nil, nil, "", errorEnvelopeStatus("unknown_model", fmt.Sprintf("model %q is not managed by deepinfra-autoscale", id), http.StatusNotFound)
 	}
+	if m, ok := modelStore.get(id); ok && isAnthropic(r) && m.MaxInputTokens > 0 {
+		n := estimateTokens(r.Payload)
+		if limit := inputLimit(claudeMessages(r.Payload), n, m.MaxInputTokens); n > limit {
+			// Claude Code compacts the conversation and retries on exactly this message.
+			return "", nil, nil, "", errorEnvelopeStatus("invalid_request_error",
+				fmt.Sprintf("prompt is too long: %d tokens > %d maximum", n, limit), http.StatusBadRequest)
+		}
+	}
 	modelStore.markUsed(id, time.Now().Unix())
 
 	status, err := ensureRunning(r.HostCallbackID, id)
@@ -118,6 +130,106 @@ func prepareUpstream(r *executorRequest) (url string, headers map[string][]strin
 	}
 	body = rewriteModel(r.Payload, name, thinkingOff, isAnthropic(r))
 	return url, headers, body, loopGuard, nil
+}
+
+// bytesPerToken turns a request's size into a token estimate. Claude Code requests to RED-SNOW took
+// 3.65 to 7.55 bytes per GLM token, and 3.15 at the least per input token billed, so 3 overestimates.
+const bytesPerToken = 3
+
+func estimateTokens(payload []byte) int64 {
+	return int64(len(payload)) / bytesPerToken
+}
+
+// Claude Code's prompt asking for a summary when it compacts a conversation, and how the first
+// message of a conversation it has compacted starts.
+const (
+	compactPrompt  = "Your task is to create a detailed summary of the conversation so far"
+	compactedStart = "This session is being continued from a previous conversation"
+)
+
+// compactedFloors holds, per compacted conversation (keyed by its summary), the estimate of the first
+// request seen with it: the request Claude Code sends right after compacting.
+var compactedFloors = struct {
+	sync.Mutex
+	m map[uint64]int64
+}{m: map[uint64]int64{}}
+
+type claudeMessage struct {
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
+}
+
+func claudeMessages(payload []byte) []claudeMessage {
+	var body struct {
+		Messages []claudeMessage `json:"messages"`
+	}
+	_ = json.Unmarshal(payload, &body)
+	return body.Messages
+}
+
+// texts returns a message's text blocks.
+func (m claudeMessage) texts() []string {
+	var s string
+	if json.Unmarshal(m.Content, &s) == nil {
+		return []string{s}
+	}
+	var blocks []struct{ Type, Text string }
+	_ = json.Unmarshal(m.Content, &blocks)
+	var out []string
+	for _, b := range blocks {
+		if b.Type == "text" {
+			out = append(out, b.Text)
+		}
+	}
+	return out
+}
+
+// isCompaction reports whether a request is Claude Code compacting the conversation. Its prompt is
+// in the last user message; a system message may follow it.
+func isCompaction(msgs []claudeMessage) bool {
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == "user" {
+			for _, t := range msgs[i].texts() {
+				if strings.Contains(t, compactPrompt) {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	return false
+}
+
+// inputLimit returns the input cap for a request of n estimated tokens. Claude Code's compaction
+// request is never capped, or it could never compact. After a compaction Claude Code cannot go below
+// the summary, the last turn it keeps and the files it re-reads (62-71k estimated tokens in testing),
+// so a compacted conversation may grow by a quarter of the cap past its first request; otherwise
+// every turn after a compaction would be rejected.
+func inputLimit(msgs []claudeMessage, n, limit int64) int64 {
+	if isCompaction(msgs) {
+		return math.MaxInt64
+	}
+	if len(msgs) == 0 {
+		return limit
+	}
+	for _, t := range msgs[0].texts() {
+		if strings.HasPrefix(t, compactedStart) {
+			h := fnv.New64a()
+			h.Write([]byte(t))
+			key := h.Sum64()
+			compactedFloors.Lock()
+			defer compactedFloors.Unlock()
+			if len(compactedFloors.m) >= 4096 {
+				clear(compactedFloors.m)
+			}
+			floor, ok := compactedFloors.m[key]
+			if !ok {
+				floor, compactedFloors.m[key] = n, n
+			}
+			return max(limit, floor+limit/4)
+		}
+	}
+	return limit
 }
 
 func handleExecutorExecute(req []byte) []byte {
@@ -164,6 +276,7 @@ func handleExecutorExecuteStream(req []byte) []byte {
 		var decoded map[string]any
 		_ = json.Unmarshal(body, &decoded)
 		g := &guard{id: guardSeq.Add(1), r: &r, url: url, headers: headers, body: decoded, downstream: downstream, mode: loopGuard, anthropic: isAnthropic(&r)}
+		g.compaction = g.anthropic && isCompaction(claudeMessages(body))
 		go g.pump(hostStream, 0)
 	} else {
 		go pumpStream(hostStream, downstream)

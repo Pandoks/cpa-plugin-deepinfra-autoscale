@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"regexp"
@@ -9,6 +10,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
 )
 
 func TestParseGPU(t *testing.T) {
@@ -432,6 +436,7 @@ func TestNeedsRedeploy(t *testing.T) {
 		{"nothing", func(m *Model) {}, false},
 		{"name in Claude Code", func(m *Model) { m.DisplayName = "New" }, false},
 		{"loop guard", func(m *Model) { m.LoopGuard = loopGuardOn }, false},
+		{"max input tokens", func(m *Model) { m.MaxInputTokens = 49152 }, false},
 		{"GPU added", func(m *Model) { m.GPUs = append([]string{"1xB300-270GB"}, m.GPUs...) }, false},
 		{"other GPU removed", func(m *Model) { m.GPUs = []string{"1xH200-141GB"} }, false},
 		{"deployed GPU removed", func(m *Model) { m.GPUs = []string{"2xA100-80GB"} }, true},
@@ -616,4 +621,71 @@ func indexOf(s, sub string) int {
 		}
 	}
 	return -1
+}
+
+func TestMaxInputTokens(t *testing.T) {
+	old := modelStore
+	t.Cleanup(func() { modelStore = old })
+	modelStore = newTestStore(t)
+	modelStore.idLocks = map[string]*sync.Mutex{}
+	if err := modelStore.add(&Model{ID: "m", HFRepo: "O/M", GPUs: []string{"1xA100-80GB"}, Context: 1 << 20, MaxInputTokens: 1000}); err != nil {
+		t.Fatal(err)
+	}
+	clear(compactedFloors.m)
+
+	// Shaped like Claude Code 2.1.310's requests: text blocks after a reminder, the compaction prompt in
+	// the last user message with a system message after it, and the summary in the first message.
+	pad := func(n int) string { return strings.Repeat("a", n) }
+	user := func(texts ...string) map[string]any {
+		var blocks []any
+		for _, s := range append([]string{"<system-reminder>context</system-reminder>"}, texts...) {
+			blocks = append(blocks, map[string]any{"type": "text", "text": s})
+		}
+		return map[string]any{"role": "user", "content": blocks}
+	}
+	reply := map[string]any{"role": "assistant", "content": "ok"}
+	attached := map[string]any{"role": "system", "content": "re-read files"}
+	compact := user("CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.\n\nYour task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests.")
+	summary := "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\n" + pad(4500)
+	req := func(msgs ...any) []byte {
+		b, _ := json.Marshal(map[string]any{"model": "m", "messages": msgs})
+		return b
+	}
+	afterCompaction := req(user(summary), attached, reply, user("go on"))
+	floor := len(afterCompaction) / 3
+
+	cases := []struct {
+		name   string
+		format string
+		body   []byte
+		limit  int // 0 when the request should go upstream
+	}{
+		{"over the cap", "claude", req(user(pad(4000))), 1000},
+		{"under the cap", "claude", req(user(pad(2000))), 0},
+		{"from an OpenAI client", "openai", req(user(pad(4000))), 0},
+		{"compaction prompt in old history only", "claude", req(compact, reply, user(pad(4000))), 1000},
+		{"compaction", "claude", req(user(pad(4000)), reply, compact, attached), 0},
+		{"first request after a compaction", "claude", afterCompaction, 0},
+		{"compacted conversation grown by under a quarter of the cap", "claude", req(user(summary), attached, reply, user("go on", pad(600))), 0},
+		{"compacted conversation grown by more", "claude", req(user(summary), attached, reply, user("go on", pad(1200))), floor + 250},
+		{"compaction of the compacted conversation", "claude", req(user(summary), attached, reply, user(pad(9000)), reply, compact), 0},
+	}
+	for _, c := range cases {
+		r := &executorRequest{ExecutorRequest: pluginapi.ExecutorRequest{Model: "m", SourceFormat: c.format, Payload: c.body}}
+		_, _, _, _, errResp := prepareUpstream(r)
+		var env pluginabi.Envelope
+		_ = json.Unmarshal(errResp, &env)
+		e := env.Error
+		if c.limit == 0 {
+			// It goes on to the deployment, which has no host here, so it fails there instead.
+			if e == nil || e.HTTPStatus == 400 {
+				t.Errorf("%s: got %+v, want it passed upstream", c.name, e)
+			}
+			continue
+		}
+		want := fmt.Sprintf(`^prompt is too long: %d tokens > %d maximum$`, len(c.body)/3, c.limit)
+		if e == nil || e.HTTPStatus != 400 || !regexp.MustCompile(want).MatchString(e.Message) {
+			t.Errorf("%s: got %+v, want 400 matching %s", c.name, e, want)
+		}
+	}
 }
